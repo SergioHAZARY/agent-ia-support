@@ -1,0 +1,78 @@
+name: CI
+
+# Vérifie à chaque push et pull request que le cœur du projet tient :
+# les garde-fous de sécurité passent, le SQL et le JSON sont valides.
+# Aucune de ces étapes n'a besoin de secret ni d'accès réseau.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  garde-fous:
+    name: Garde-fous (tests de sécurité)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Exécuter les 24 tests des garde-fous
+        working-directory: engine
+        run: python test_guardrails.py
+
+  validation:
+    name: Validation SQL / JSON / prompts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Le JSON des outils est valide
+        run: python -c "import json; json.load(open('tools/agent-tools.json', encoding='utf-8')); print('tools/agent-tools.json OK')"
+
+      - name: Les params_schema des runbooks sont du JSON valide
+        run: |
+          python - <<'PY'
+          import re, json
+          s = open('sql/003_runbooks.sql', encoding='utf-8').read()
+          pat = re.compile(r"'(\{\s*\"type\"\s*:\s*\"object\".*?\})'::jsonb", re.S)
+          n = 0
+          for m in pat.finditer(s):
+              json.loads(m.group(1)); n += 1
+          print(f"{n} params_schema valides")
+          assert n >= 10, "trop peu de schémas trouvés"
+          PY
+
+      - name: PostgreSQL applique le schéma et le seed sans erreur
+        env:
+          PGPASSWORD: postgres
+        run: |
+          docker run -d --name pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres && break; sleep 1;
+          done
+          docker exec pg psql -U postgres -c "create database agent;"
+          docker cp sql/001_schema.sql   pg:/001.sql
+          docker cp sql/002_seed.sql     pg:/002.sql
+          docker cp sql/003_runbooks.sql pg:/003.sql
+          docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /001.sql
+          docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /002.sql
+          docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /003.sql
+          echo "--- comptages ---"
+          docker exec pg psql -U postgres -d agent -c "select count(*) as taxonomie from taxonomy; select count(*) as runbooks from runbooks; select count(*) as societes from tenants;"
+
+  docker:
+    name: Le docker-compose est valide
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier la syntaxe du compose
+        run: |
+          cp .env.example .env
+          docker compose config >/dev/null && echo "docker-compose.yml OK"

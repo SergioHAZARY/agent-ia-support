@@ -1,0 +1,6 @@
+Les exports JSON des workflows n8n vont ici, un fichier par workflow,
+nommé d'après son code : WF-01t-telegram.json, WF-02-contexte.json, etc.
+
+Exporter depuis l'éditeur (menu ⋯ → Download) après chaque modification
+qui change le comportement, et committer. Sans cela, personne ne pourra
+relire pourquoi l'agent s'est mis à répondre différemment.

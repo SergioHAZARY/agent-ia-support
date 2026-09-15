@@ -1,0 +1,29 @@
+# --- Secrets : ne JAMAIS committer -------------------------------------------
+.env
+.env.*
+!.env.example
+
+# Configs VPN (contiennent des clés privées)
+*.conf
+# Fichiers de connexion Bureau à distance
+*.rdp
+# Clés et certificats
+*.key
+*.pem
+*.pfx
+
+# Sauvegardes de base
+backups/*
+!backups/.gitkeep
+*.sql.gz
+
+# --- Généré / local ----------------------------------------------------------
+# Export DOCX du document — régénéré depuis le HTML
+*.docx
+__pycache__/
+*.pyc
+.venv/
+.claude/settings.local.json
+
+.DS_Store
+Thumbs.db

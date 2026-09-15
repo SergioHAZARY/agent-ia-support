@@ -1,0 +1,42 @@
+# HTTPS automatique via Let's Encrypt. Le domaine doit résoudre vers la VM
+# avant le premier démarrage, sinon l'émission du certificat échoue.
+
+{$N8N_HOST} {
+	encode gzip
+
+	# --- Webhooks entrants : publics, sans authentification ------------------
+	# Telegram, Teams et Google Chat appellent ces chemins. Les protéger
+	# casserait l'ingestion. La sécurité de ces routes tient à l'imprévisibilité
+	# de l'identifiant de webhook et aux contrôles faits dans les workflows.
+	@webhooks path /webhook/* /webhook-test/* /rest/oauth2-credential/callback
+	handle @webhooks {
+		reverse_proxy n8n:5678
+	}
+
+	# --- Tout le reste : l'éditeur n8n, réservé à l'équipe -------------------
+	# n8n 1.x n'a plus de N8N_BASIC_AUTH_* : la protection se fait ici.
+	# Ajouter un filtrage par IP si vous disposez d'une plage fixe.
+	handle {
+		basic_auth {
+			{$N8N_ADMIN_USER} {$N8N_ADMIN_PASSWORD_HASH}
+		}
+		reverse_proxy n8n:5678 {
+			flush_interval -1        # n8n pousse des évènements en SSE
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "DENY"
+		Referrer-Policy           "no-referrer"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20mb
+			roll_keep 10
+		}
+	}
+}
