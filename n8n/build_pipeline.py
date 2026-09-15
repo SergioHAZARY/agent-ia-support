@@ -20,6 +20,13 @@ GUARDRAILS_JS = open(os.path.join(HERE, "guardrails.js"), encoding="utf-8").read
 GUARDRAILS_JS = GUARDRAILS_JS.replace(
     "module.exports = { applyGuardrails, checkForbidden };", "").rstrip()
 
+# Références de credentials (id + nom), non secrètes. Absent -> pas de creds.
+CREDS = {}
+_cp = os.path.join(HERE, "credentials.json")
+if os.path.exists(_cp):
+    CREDS = {k: v for k, v in json.load(open(_cp, encoding="utf-8")).items()
+             if not k.startswith("_")}
+
 
 def system_prompt():
     t = open(os.path.join(ROOT, "prompts", "triage.md"), encoding="utf-8").read()
@@ -115,8 +122,7 @@ return [{ json: ev }];
 ASSEMBLE_JS = r"""
 // WF-02 : contexte. Fusionne ce que PostgreSQL a renvoye (societe/policies)
 // avec des defauts prudents. Si le canal est inconnu -> palier P1.
-const pg = $json && $json.tenant_id ? $json : null;   // resultat de la requete PG (si branchee)
-const src = $('Normaliser (multicanal)').item.json;
+const pg = $json && $json.tenant_id ? $json : null;   // société résolue, ou null (canal inconnu)
 
 const ctx = {
   max_autonomy: (pg && pg.max_autonomy) || 'N3',
@@ -127,6 +133,11 @@ const ctx = {
     'reseau','applicatif','developpement','securite','information','hors_perimetre'],
   confidence_floor: 0.7,
 };
+
+// La société résolue (si le canal est déclaré) est reportée sur l'événement
+// pour lier le ticket. Sinon null : l'agent trie et trace quand même (P1).
+const src = Object.assign({}, $('Normaliser (multicanal)').item.json,
+  { tenant_id: (pg && pg.tenant_id) || null });
 
 const userContent =
   "<demandeur>" + (src.sender_raw || 'INCONNU') + "</demandeur>\n" +
@@ -171,20 +182,26 @@ ASSEMBLE_JS = ASSEMBLE_JS.replace(
 # ----- PostgreSQL (executeQuery, requetes parametrees) -----------------------
 # Pas de credential codee : a attacher dans l'UI (credential 'Postgres AgentSupport').
 
+# Trace TOUJOURS l'evenement, meme si le canal n'est pas declare (channel_id null).
+# CTE + select final => renvoie toujours exactement une ligne (le flux continue).
 PG_EVENT_SQL = (
-    "insert into events (channel_id, tenant_id, source_message_id, sender_raw, "
-    "body, lang, received_at) "
-    "select c.id, c.tenant_id, $1, $2, $3, null, now() "
-    "from channels c where c.platform = $4 and c.external_id = $5 "
-    "on conflict (channel_id, source_message_id) do nothing "
-    "returning id;")
+    "with ins as ("
+    " insert into events (channel_id, tenant_id, source_message_id, sender_raw, body, received_at)"
+    " select c.id, c.tenant_id, $1, $2, $3, now()"
+    " from (select $4::text as platform, $5::text as external_id) q"
+    " left join channels c on c.platform = q.platform and c.external_id = q.external_id"
+    " on conflict (channel_id, source_message_id) do nothing"
+    " returning id"
+    ") select (select id from ins) as event_id;")
 
+# Resout la societe SI le canal est actif ; sinon renvoie une ligne a null
+# (grace au select-from-dummy en LEFT JOIN) => le flux ne s'interrompt jamais.
 PG_CTX_SQL = (
-    "select t.id as tenant_id, t.max_autonomy, t.observation_only, "
-    "p.escalation_channel, p.approval_channel "
-    "from channels c join tenants t on t.id = c.tenant_id "
-    "left join tenant_policies p on p.tenant_id = t.id "
-    "where c.platform = $1 and c.external_id = $2 and c.status = 'active' limit 1;")
+    "select c.tenant_id, t.max_autonomy, t.observation_only "
+    "from (select $1::text as platform, $2::text as external_id) q "
+    "left join channels c on c.platform = q.platform and c.external_id = q.external_id "
+    "and c.status = 'active' "
+    "left join tenants t on t.id = c.tenant_id;")
 
 PG_TICKET_SQL = (
     "insert into tickets (tenant_id, title, summary, category, subcategory, "
@@ -199,7 +216,7 @@ def pg_node(name, pos, sql, repl_expr):
         "operation": "executeQuery",
         "query": sql,
         "options": {"queryReplacement": repl_expr},
-    })
+    }, creds=({"postgres": CREDS["postgres"]} if "postgres" in CREDS else None))
 
 
 # --------------------------------------------------------------------------- #
@@ -247,16 +264,27 @@ nodes = [
     node("Modele Anthropic", "@n8n/n8n-nodes-langchain.lmChatAnthropic", 1.3, [1120, 460], {
         "model": {"__rl": True, "mode": "id",
                   "value": "={{ $env.ANTHROPIC_MODEL || 'claude-sonnet-5' }}"},
-        "options": {"maxTokensToSample": 2000, "temperature": 0}}),
+        "options": {"maxTokensToSample": 2000, "temperature": 0}},
+        creds=({"anthropicApi": CREDS["anthropicApi"]} if "anthropicApi" in CREDS else None)),
 
     node("Parser + garde-fous", "n8n-nodes-base.code", 2, [1360, 240],
          {"jsCode": PARSE_GUARD_JS}),
-    pg_node("PG: creer le ticket", [1580, 240], PG_TICKET_SQL,
+    node("Est-ce un ticket ?", "n8n-nodes-base.if", 2.3, [1580, 240], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "c1",
+                                       "leftValue": "={{ $json.is_ticket }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "boolean", "operation": "true",
+                                                    "singleValue": True}}]},
+        "options": {}}),
+    node("Ignore (pas un ticket)", "n8n-nodes-base.noOp", 1, [1800, 40]),
+    pg_node("PG: creer le ticket", [1800, 300], PG_TICKET_SQL,
             "={{ $json._source.tenant_id || null }},={{ $json.title }},={{ $json.summary }},"
             "={{ $json.category }},={{ $json.subcategory }},={{ $json.priority }},"
             "={{ $json.autonomy_level }},={{ $json.confidence }},"
             "={{ $json.proposed_response || '' }},={{ $json.escalation_reason || '' }}"),
-    node("Router par niveau", "n8n-nodes-base.switch", 3.2, [1800, 240], {
+    node("Router par niveau", "n8n-nodes-base.switch", 3.2, [2020, 300], {
         "rules": {"values": [
             {"conditions": {"options": {"caseSensitive": True}, "combinator": "and",
                             "conditions": [{"leftValue": "={{ $('Parser + garde-fous').item.json.autonomy_level }}",
@@ -264,10 +292,10 @@ nodes = [
                                             "operator": {"type": "string", "operation": "equals"}}]},
              "outputKey": lvl} for lvl in ["N0", "N1", "N2", "N3"]]},
         "options": {}}),
-    node("N0 repondre", "n8n-nodes-base.noOp", 1, [2040, 40]),
-    node("N1 valider puis executer", "n8n-nodes-base.noOp", 1, [2040, 180]),
-    node("N2 guider", "n8n-nodes-base.noOp", 1, [2040, 320]),
-    node("N3 escalader", "n8n-nodes-base.noOp", 1, [2040, 460]),
+    node("N0 repondre", "n8n-nodes-base.noOp", 1, [2260, 120]),
+    node("N1 valider puis executer", "n8n-nodes-base.noOp", 1, [2260, 260]),
+    node("N2 guider", "n8n-nodes-base.noOp", 1, [2260, 400]),
+    node("N3 escalader", "n8n-nodes-base.noOp", 1, [2260, 540]),
 
     # --- Branche reporting ---
     sticky("noteReport",
@@ -293,7 +321,9 @@ connections = merge_conn(
         ("PG: resoudre societe", "Assembler le contexte"),
         ("Assembler le contexte", "Agent Claude (triage)"),
         ("Agent Claude (triage)", "Parser + garde-fous"),
-        ("Parser + garde-fous", "PG: creer le ticket"),
+        ("Parser + garde-fous", "Est-ce un ticket ?"),
+        ("Est-ce un ticket ?", "PG: creer le ticket", 0),   # sortie 0 = vrai
+        ("Est-ce un ticket ?", "Ignore (pas un ticket)", 1),  # sortie 1 = faux
         ("PG: creer le ticket", "Router par niveau"),
         ("Router par niveau", "N0 repondre", 0),
         ("Router par niveau", "N1 valider puis executer", 1),
