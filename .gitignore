@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# Coffre local des identifiants — reste sur le poste, jamais sur GitHub
+SECRETS.local.md
+*.local.md
+*.secrets
 
 # Configs VPN (contiennent des clés privées)
 *.conf
