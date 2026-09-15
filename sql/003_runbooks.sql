@@ -333,7 +333,13 @@ on conflict do nothing;
 -- =============================================================================
 create or replace view v_runbooks_disponibles as
 with classe as (
-  select t.id as tenant_id, t.max_autonomy, r.*,
+  -- On expose l'id de la SOCIÉTÉ comme tenant_id (le runbook peut être global).
+  -- Colonnes listées explicitement : un r.* réintroduirait runbooks.tenant_id
+  -- et rendrait la référence ambiguë.
+  select t.id as tenant_id, t.max_autonomy,
+         r.code, r.title, r.category, r.autonomy_level, r.backend,
+         r.execution_mode, r.approval_required, r.manager_approval,
+         r.allowed_roles, r.preconditions, r.params_schema, r.n8n_webhook,
          -- 1 = runbook propre à la société, 2 = global. Le plus petit gagne.
          case when r.tenant_id is null then 2 else 1 end as rang
   from tenants t
