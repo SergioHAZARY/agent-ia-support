@@ -35,11 +35,13 @@ def system_prompt():
     return t[s:e].strip()
 
 
-def node(name, ntype, ver, pos, params=None, creds=None):
+def node(name, ntype, ver, pos, params=None, creds=None, disabled=False):
     n = {"name": name, "type": ntype, "typeVersion": ver, "position": pos,
          "parameters": params or {}}
     if creds:
         n["credentials"] = creds
+    if disabled:
+        n["disabled"] = True
     return n
 
 
@@ -243,7 +245,12 @@ nodes = [
     node("Webhook multicanal", "n8n-nodes-base.webhook", 1.1, [-60, 220], {
         "httpMethod": "POST", "path": "agent-support",
         "responseMode": "onReceived", "options": {}}),
-    node("Email IMAP", "n8n-nodes-base.emailReadImap", 2, [-60, 380], {"options": {}}),
+    # Desactive : aucun compte itsupport@ n'a encore de credential IMAP dans
+    # n8n. Un noeud trigger sans credential bloque l'activation du workflow
+    # entier (verifie via l'API : "Node does not have any credentials set").
+    # Reactiver (disabled=False) une fois la credential IMAP creee dans n8n.
+    node("Email IMAP", "n8n-nodes-base.emailReadImap", 2, [-60, 380], {"options": {}},
+         disabled=True),
     node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 520]),
 
     # --- Pipeline principal ---
