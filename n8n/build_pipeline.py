@@ -94,7 +94,7 @@ if (j.message || j.channel_post) {                 // Telegram
     source_message_id:String(t.message_id||''),
     sender_external_id:String((t.from||{}).id||''),
     sender_raw:[(t.from||{}).first_name,(t.from||{}).last_name,(t.from||{}).username].filter(Boolean).join(' '),
-    message_body: t.text || t.caption || '' };
+    message_body: t.text || t.caption || (t.photo ? '[photo]' : '') || (t.document ? '[fichier]' : '') || (t.voice ? '[vocal]' : '') || (t.sticker ? '[sticker]' : '') || '' };
 } else if (j.headers && j.body) {                  // Webhook (Teams/GChat/ClickUp/Jira)
   const b = j.body || {};
   // 'platform' peut etre passe en query (?platform=teams) ou devine
@@ -258,11 +258,11 @@ nodes = [
     node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [220, 240],
          {"jsCode": NORMALIZE_JS}),
     pg_node("PG: enregistrer evenement", [440, 240], PG_EVENT_SQL,
-            "={{ $json.source_message_id }},={{ $json.sender_raw }},={{ $json.message_body }},"
-            "={{ $json.platform }},={{ $json.external_id }}"),
+            "={{ [$json.source_message_id, $json.sender_raw, $json.message_body, "
+            "$json.platform, $json.external_id] }}"),
     pg_node("PG: resoudre societe", [660, 240], PG_CTX_SQL,
-            "={{ $('Normaliser (multicanal)').item.json.platform }},"
-            "={{ $('Normaliser (multicanal)').item.json.external_id }}"),
+            "={{ [$('Normaliser (multicanal)').item.json.platform, "
+            "$('Normaliser (multicanal)').item.json.external_id] }}"),
     node("Assembler le contexte", "n8n-nodes-base.code", 2, [880, 240],
          {"jsCode": ASSEMBLE_JS}),
 
@@ -288,10 +288,10 @@ nodes = [
         "options": {}}),
     node("Ignore (pas un ticket)", "n8n-nodes-base.noOp", 1, [1800, 40]),
     pg_node("PG: creer le ticket", [1800, 300], PG_TICKET_SQL,
-            "={{ $json._source.tenant_id || null }},={{ $json.title }},={{ $json.summary }},"
-            "={{ $json.category }},={{ $json.subcategory }},={{ $json.priority }},"
-            "={{ $json.autonomy_level }},={{ $json.confidence }},"
-            "={{ $json.proposed_response || '' }},={{ $json.escalation_reason || '' }}"),
+            "={{ [$json._source.tenant_id || null, $json.title, $json.summary, "
+            "$json.category, $json.subcategory, $json.priority, "
+            "$json.autonomy_level, $json.confidence, "
+            "$json.proposed_response || '', $json.escalation_reason || ''] }}"),
     node("Router par niveau", "n8n-nodes-base.switch", 3.2, [2020, 300], {
         "rules": {"values": [
             {"conditions": {"options": {"caseSensitive": True}, "combinator": "and",

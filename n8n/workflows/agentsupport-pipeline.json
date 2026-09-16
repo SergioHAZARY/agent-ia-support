@@ -83,7 +83,7 @@
         240
       ],
       "parameters": {
-        "jsCode": "// Normalisation MULTICANAL vers un evenement unique.\n// Detecte la source d'apres la forme de l'entree.\nconst j = $json;\nlet ev;\n\nif (j.message || j.channel_post) {                 // Telegram\n  const t = j.message || j.channel_post;\n  ev = { platform:'telegram', external_id:String((t.chat||{}).id||''),\n    source_message_id:String(t.message_id||''),\n    sender_external_id:String((t.from||{}).id||''),\n    sender_raw:[(t.from||{}).first_name,(t.from||{}).last_name,(t.from||{}).username].filter(Boolean).join(' '),\n    message_body: t.text || t.caption || '' };\n} else if (j.headers && j.body) {                  // Webhook (Teams/GChat/ClickUp/Jira)\n  const b = j.body || {};\n  // 'platform' peut etre passe en query (?platform=teams) ou devine\n  const plat = (j.query && j.query.platform) || b.platform || 'webhook';\n  ev = { platform: plat,\n    external_id: String(b.channel_id || b.space || (b.space||{}).name || b.chat_id || b.list_id || ''),\n    source_message_id: String(b.message_id || b.eventId || (b.message||{}).name || Date.now()),\n    sender_external_id: String(b.user_id || (b.from||{}).id || (b.user||{}).name || ''),\n    sender_raw: String(b.user_name || (b.from||{}).user || (b.user||{}).displayName || ''),\n    message_body: b.text || (b.message||{}).text || b.description || b.content || '' };\n} else if (j.textPlain || j.textHtml || j.subject) {  // Email IMAP\n  ev = { platform:'email',\n    external_id: String(((j.from||{}).value||[{}])[0].address || j.from || ''),\n    source_message_id: String(j.messageId || j.uid || Date.now()),\n    sender_external_id: String(((j.from||{}).value||[{}])[0].address || ''),\n    sender_raw: String(((j.from||{}).value||[{}])[0].name || j.from || ''),\n    message_body: (j.subject ? j.subject + ' — ' : '') + (j.textPlain || '') };\n} else {                                            // Manuel (test)\n  ev = { platform:'telegram', external_id:'demo', source_message_id:String(Date.now()),\n    sender_external_id:'0', sender_raw:'Demo (non verifie)',\n    message_body: j.message_body || \"Bonjour, pouvez-vous m'ajouter a l'outil de design ?\" };\n}\nev.received_at = new Date().toISOString();\nreturn [{ json: ev }];"
+        "jsCode": "// Normalisation MULTICANAL vers un evenement unique.\n// Detecte la source d'apres la forme de l'entree.\nconst j = $json;\nlet ev;\n\nif (j.message || j.channel_post) {                 // Telegram\n  const t = j.message || j.channel_post;\n  ev = { platform:'telegram', external_id:String((t.chat||{}).id||''),\n    source_message_id:String(t.message_id||''),\n    sender_external_id:String((t.from||{}).id||''),\n    sender_raw:[(t.from||{}).first_name,(t.from||{}).last_name,(t.from||{}).username].filter(Boolean).join(' '),\n    message_body: t.text || t.caption || (t.photo ? '[photo]' : '') || (t.document ? '[fichier]' : '') || (t.voice ? '[vocal]' : '') || (t.sticker ? '[sticker]' : '') || '' };\n} else if (j.headers && j.body) {                  // Webhook (Teams/GChat/ClickUp/Jira)\n  const b = j.body || {};\n  // 'platform' peut etre passe en query (?platform=teams) ou devine\n  const plat = (j.query && j.query.platform) || b.platform || 'webhook';\n  ev = { platform: plat,\n    external_id: String(b.channel_id || b.space || (b.space||{}).name || b.chat_id || b.list_id || ''),\n    source_message_id: String(b.message_id || b.eventId || (b.message||{}).name || Date.now()),\n    sender_external_id: String(b.user_id || (b.from||{}).id || (b.user||{}).name || ''),\n    sender_raw: String(b.user_name || (b.from||{}).user || (b.user||{}).displayName || ''),\n    message_body: b.text || (b.message||{}).text || b.description || b.content || '' };\n} else if (j.textPlain || j.textHtml || j.subject) {  // Email IMAP\n  ev = { platform:'email',\n    external_id: String(((j.from||{}).value||[{}])[0].address || j.from || ''),\n    source_message_id: String(j.messageId || j.uid || Date.now()),\n    sender_external_id: String(((j.from||{}).value||[{}])[0].address || ''),\n    sender_raw: String(((j.from||{}).value||[{}])[0].name || j.from || ''),\n    message_body: (j.subject ? j.subject + ' — ' : '') + (j.textPlain || '') };\n} else {                                            // Manuel (test)\n  ev = { platform:'telegram', external_id:'demo', source_message_id:String(Date.now()),\n    sender_external_id:'0', sender_raw:'Demo (non verifie)',\n    message_body: j.message_body || \"Bonjour, pouvez-vous m'ajouter a l'outil de design ?\" };\n}\nev.received_at = new Date().toISOString();\nreturn [{ json: ev }];"
       }
     },
     {
@@ -98,7 +98,7 @@
         "operation": "executeQuery",
         "query": "with ins as ( insert into events (channel_id, tenant_id, source_message_id, sender_raw, body, received_at) select c.id, c.tenant_id, $1, $2, $3, now() from (select $4::text as platform, $5::text as external_id) q left join channels c on c.platform = q.platform and c.external_id = q.external_id on conflict (channel_id, source_message_id) do nothing returning id) select (select id from ins) as event_id;",
         "options": {
-          "queryReplacement": "={{ $json.source_message_id }},={{ $json.sender_raw }},={{ $json.message_body }},={{ $json.platform }},={{ $json.external_id }}"
+          "queryReplacement": "={{ [$json.source_message_id, $json.sender_raw, $json.message_body, $json.platform, $json.external_id] }}"
         }
       },
       "credentials": {
@@ -120,7 +120,7 @@
         "operation": "executeQuery",
         "query": "select c.tenant_id, t.max_autonomy, t.observation_only from (select $1::text as platform, $2::text as external_id) q left join channels c on c.platform = q.platform and c.external_id = q.external_id and c.status = 'active' left join tenants t on t.id = c.tenant_id;",
         "options": {
-          "queryReplacement": "={{ $('Normaliser (multicanal)').item.json.platform }},={{ $('Normaliser (multicanal)').item.json.external_id }}"
+          "queryReplacement": "={{ [$('Normaliser (multicanal)').item.json.platform, $('Normaliser (multicanal)').item.json.external_id] }}"
         }
       },
       "credentials": {
@@ -246,7 +246,7 @@
         "operation": "executeQuery",
         "query": "insert into tickets (tenant_id, title, summary, category, subcategory, priority, autonomy_level, confidence, status, ai_response, escalation_reason) values ($1,$2,$3,$4,$5,$6,$7,$8,'nouveau',$9,$10) returning id, ref;",
         "options": {
-          "queryReplacement": "={{ $json._source.tenant_id || null }},={{ $json.title }},={{ $json.summary }},={{ $json.category }},={{ $json.subcategory }},={{ $json.priority }},={{ $json.autonomy_level }},={{ $json.confidence }},={{ $json.proposed_response || '' }},={{ $json.escalation_reason || '' }}"
+          "queryReplacement": "={{ [$json._source.tenant_id || null, $json.title, $json.summary, $json.category, $json.subcategory, $json.priority, $json.autonomy_level, $json.confidence, $json.proposed_response || '', $json.escalation_reason || ''] }}"
         }
       },
       "credentials": {
