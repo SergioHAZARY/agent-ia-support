@@ -52,7 +52,7 @@
       }
     },
     {
-      "name": "Email IMAP",
+      "name": "Email IMAP (Outlook)",
       "type": "n8n-nodes-base.emailReadImap",
       "typeVersion": 2,
       "position": [
@@ -65,12 +65,29 @@
       "disabled": true
     },
     {
+      "name": "JiraTrigger",
+      "type": "n8n-nodes-base.jiraTrigger",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        540
+      ],
+      "parameters": {
+        "events": [
+          "jira:issue_created",
+          "jira:issue_updated"
+        ],
+        "additionalFields": {}
+      },
+      "disabled": true
+    },
+    {
       "name": "Declencheur manuel",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
         -60,
-        520
+        700
       ],
       "parameters": {}
     },
@@ -83,7 +100,7 @@
         240
       ],
       "parameters": {
-        "jsCode": "// Normalisation MULTICANAL vers un evenement unique.\n// Detecte la source d'apres la forme de l'entree.\nconst j = $json;\nlet ev;\n\nif (j.message || j.channel_post) {                 // Telegram\n  const t = j.message || j.channel_post;\n  ev = { platform:'telegram', external_id:String((t.chat||{}).id||''),\n    source_message_id:String(t.message_id||''),\n    sender_external_id:String((t.from||{}).id||''),\n    sender_raw:[(t.from||{}).first_name,(t.from||{}).last_name,(t.from||{}).username].filter(Boolean).join(' '),\n    message_body: t.text || t.caption || (t.photo ? '[photo]' : '') || (t.document ? '[fichier]' : '') || (t.voice ? '[vocal]' : '') || (t.sticker ? '[sticker]' : '') || '' };\n} else if (j.headers && j.body) {                  // Webhook (Teams/GChat/ClickUp/Jira)\n  const b = j.body || {};\n  // 'platform' peut etre passe en query (?platform=teams) ou devine\n  const plat = (j.query && j.query.platform) || b.platform || 'webhook';\n  ev = { platform: plat,\n    external_id: String(b.channel_id || b.space || (b.space||{}).name || b.chat_id || b.list_id || ''),\n    source_message_id: String(b.message_id || b.eventId || (b.message||{}).name || Date.now()),\n    sender_external_id: String(b.user_id || (b.from||{}).id || (b.user||{}).name || ''),\n    sender_raw: String(b.user_name || (b.from||{}).user || (b.user||{}).displayName || ''),\n    message_body: b.text || (b.message||{}).text || b.description || b.content || '' };\n} else if (j.textPlain || j.textHtml || j.subject) {  // Email IMAP\n  ev = { platform:'email',\n    external_id: String(((j.from||{}).value||[{}])[0].address || j.from || ''),\n    source_message_id: String(j.messageId || j.uid || Date.now()),\n    sender_external_id: String(((j.from||{}).value||[{}])[0].address || ''),\n    sender_raw: String(((j.from||{}).value||[{}])[0].name || j.from || ''),\n    message_body: (j.subject ? j.subject + ' — ' : '') + (j.textPlain || '') };\n} else {                                            // Manuel (test)\n  ev = { platform:'telegram', external_id:'demo', source_message_id:String(Date.now()),\n    sender_external_id:'0', sender_raw:'Demo (non verifie)',\n    message_body: j.message_body || \"Bonjour, pouvez-vous m'ajouter a l'outil de design ?\" };\n}\nev.received_at = new Date().toISOString();\nreturn [{ json: ev }];"
+        "jsCode": "// Normalisation MULTICANAL vers un evenement unique.\n// Detecte la source d'apres la forme de l'entree.\nconst j = $json;\nlet ev;\n\nif (j.message || j.channel_post) {                 // Telegram\n  const t = j.message || j.channel_post;\n  ev = { platform:'telegram', external_id:String((t.chat||{}).id||''),\n    source_message_id:String(t.message_id||''),\n    sender_external_id:String((t.from||{}).id||''),\n    sender_raw:[(t.from||{}).first_name,(t.from||{}).last_name,(t.from||{}).username].filter(Boolean).join(' '),\n    message_body: t.text || t.caption || (t.photo ? '[photo]' : '') || (t.document ? '[fichier]' : '') || (t.voice ? '[vocal]' : '') || (t.sticker ? '[sticker]' : '') || '' };\n} else if (j.webhookEvent && j.issue) {              // Jira Trigger (webhook natif)\n  const iss = j.issue || {};\n  const f = iss.fields || {};\n  const rep = f.reporter || {};\n  // external_id = site Atlassian (extrait du self URL de l'issue)\n  const selfUrl = (iss.self || '');\n  const site = selfUrl.match(/https?:\\/\\/([^/]+)/);\n  ev = { platform:'jira',\n    external_id: site ? site[1] : 'jira',\n    source_message_id: String(iss.key || iss.id || Date.now()),\n    sender_external_id: String(rep.emailAddress || rep.accountId || ''),\n    sender_raw: String(rep.displayName || rep.name || ''),\n    message_body: (f.summary || '') + (f.description ? ' — ' + f.description : '') };\n} else if (j.headers && j.body) {                  // Webhook (Teams/GChat/ClickUp)\n  const b = j.body || {};\n  const plat = (j.query && j.query.platform) || b.platform || 'webhook';\n  ev = { platform: plat,\n    external_id: String(b.channel_id || b.space || (b.space||{}).name || b.chat_id || b.list_id || ''),\n    source_message_id: String(b.message_id || b.eventId || (b.message||{}).name || Date.now()),\n    sender_external_id: String(b.user_id || (b.from||{}).id || (b.user||{}).name || ''),\n    sender_raw: String(b.user_name || (b.from||{}).user || (b.user||{}).displayName || ''),\n    message_body: b.text || (b.message||{}).text || b.description || b.content || '' };\n} else if (j.textPlain || j.textHtml || j.subject) {  // Email IMAP / Outlook\n  // external_id = adresse de la boite de reception (to), pas l'expediteur\n  const toAddr = ((j.to||{}).value||[{}])[0].address || '';\n  ev = { platform:'email',\n    external_id: String(toAddr).toLowerCase(),\n    source_message_id: String(j.messageId || j.uid || Date.now()),\n    sender_external_id: String(((j.from||{}).value||[{}])[0].address || ''),\n    sender_raw: String(((j.from||{}).value||[{}])[0].name || j.from || ''),\n    message_body: (j.subject ? j.subject + ' — ' : '') + (j.textPlain || '') };\n} else {                                            // Manuel (test)\n  ev = { platform:'telegram', external_id:'demo', source_message_id:String(Date.now()),\n    sender_external_id:'0', sender_raw:'Demo (non verifie)',\n    message_body: j.message_body || \"Bonjour, pouvez-vous m'ajouter a l'outil de design ?\" };\n}\nev.received_at = new Date().toISOString();\nreturn [{ json: ev }];"
       }
     },
     {
@@ -475,7 +492,18 @@
         ]
       ]
     },
-    "Email IMAP": {
+    "Email IMAP (Outlook)": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JiraTrigger": {
       "main": [
         [
           {

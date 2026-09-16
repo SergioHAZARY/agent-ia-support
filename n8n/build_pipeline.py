@@ -95,9 +95,21 @@ if (j.message || j.channel_post) {                 // Telegram
     sender_external_id:String((t.from||{}).id||''),
     sender_raw:[(t.from||{}).first_name,(t.from||{}).last_name,(t.from||{}).username].filter(Boolean).join(' '),
     message_body: t.text || t.caption || (t.photo ? '[photo]' : '') || (t.document ? '[fichier]' : '') || (t.voice ? '[vocal]' : '') || (t.sticker ? '[sticker]' : '') || '' };
-} else if (j.headers && j.body) {                  // Webhook (Teams/GChat/ClickUp/Jira)
+} else if (j.webhookEvent && j.issue) {              // Jira Trigger (webhook natif)
+  const iss = j.issue || {};
+  const f = iss.fields || {};
+  const rep = f.reporter || {};
+  // external_id = site Atlassian (extrait du self URL de l'issue)
+  const selfUrl = (iss.self || '');
+  const site = selfUrl.match(/https?:\/\/([^/]+)/);
+  ev = { platform:'jira',
+    external_id: site ? site[1] : 'jira',
+    source_message_id: String(iss.key || iss.id || Date.now()),
+    sender_external_id: String(rep.emailAddress || rep.accountId || ''),
+    sender_raw: String(rep.displayName || rep.name || ''),
+    message_body: (f.summary || '') + (f.description ? ' — ' + f.description : '') };
+} else if (j.headers && j.body) {                  // Webhook (Teams/GChat/ClickUp)
   const b = j.body || {};
-  // 'platform' peut etre passe en query (?platform=teams) ou devine
   const plat = (j.query && j.query.platform) || b.platform || 'webhook';
   ev = { platform: plat,
     external_id: String(b.channel_id || b.space || (b.space||{}).name || b.chat_id || b.list_id || ''),
@@ -105,9 +117,11 @@ if (j.message || j.channel_post) {                 // Telegram
     sender_external_id: String(b.user_id || (b.from||{}).id || (b.user||{}).name || ''),
     sender_raw: String(b.user_name || (b.from||{}).user || (b.user||{}).displayName || ''),
     message_body: b.text || (b.message||{}).text || b.description || b.content || '' };
-} else if (j.textPlain || j.textHtml || j.subject) {  // Email IMAP
+} else if (j.textPlain || j.textHtml || j.subject) {  // Email IMAP / Outlook
+  // external_id = adresse de la boite de reception (to), pas l'expediteur
+  const toAddr = ((j.to||{}).value||[{}])[0].address || '';
   ev = { platform:'email',
-    external_id: String(((j.from||{}).value||[{}])[0].address || j.from || ''),
+    external_id: String(toAddr).toLowerCase(),
     source_message_id: String(j.messageId || j.uid || Date.now()),
     sender_external_id: String(((j.from||{}).value||[{}])[0].address || ''),
     sender_raw: String(((j.from||{}).value||[{}])[0].name || j.from || ''),
@@ -246,13 +260,21 @@ nodes = [
     node("Webhook multicanal", "n8n-nodes-base.webhook", 1.1, [-60, 220], {
         "httpMethod": "POST", "path": "agent-support",
         "responseMode": "onReceived", "options": {}}),
-    # Desactive : aucun compte itsupport@ n'a encore de credential IMAP dans
-    # n8n. Un noeud trigger sans credential bloque l'activation du workflow
-    # entier (verifie via l'API : "Node does not have any credentials set").
-    # Reactiver (disabled=False) une fois la credential IMAP creee dans n8n.
-    node("Email IMAP", "n8n-nodes-base.emailReadImap", 2, [-60, 380], {"options": {}},
-         disabled=True),
-    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 520]),
+    # Email IMAP : désactivé tant que la credential IMAP n'est pas créée dans n8n.
+    # Sert pour Outlook (Support-IT@francoisesaget.com) - département François Saget.
+    # Réactiver (disabled=False) une fois la credential IMAP/Outlook créée.
+    node("Email IMAP (Outlook)", "n8n-nodes-base.emailReadImap", 2, [-60, 380],
+         {"options": {}},
+         creds=({"imap": CREDS["imap"]} if "imap" in CREDS else None),
+         disabled=("imap" not in CREDS)),
+    # Jira Trigger : écoute les créations/mises à jour de tickets Bazarchic.
+    # Désactivé tant que la credential Jira n'est pas créée dans n8n.
+    node("JiraTrigger", "n8n-nodes-base.jiraTrigger", 1, [-60, 540],
+         {"events": ["jira:issue_created", "jira:issue_updated"],
+          "additionalFields": {}},
+         creds=({"jiraSoftwareCloudApi": CREDS["jira"]} if "jira" in CREDS else None),
+         disabled=("jira" not in CREDS)),
+    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 700]),
 
     # --- Pipeline principal ---
     node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [220, 240],
@@ -322,7 +344,8 @@ connections = merge_conn(
     conn([
         ("TelegramTrigger", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
-        ("Email IMAP", "Normaliser (multicanal)"),
+        ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
+        ("JiraTrigger", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
         ("Normaliser (multicanal)", "PG: enregistrer evenement"),
         ("PG: enregistrer evenement", "PG: resoudre societe"),
