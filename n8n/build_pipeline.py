@@ -204,6 +204,26 @@ const rows = $input.all().map(i => i.json);
 return [{ json: { count: rows.length, tickets: rows } }];
 """.strip()
 
+JIRA_DEDUP_JS = r"""
+// Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).
+// Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).
+const iss = $json;
+const f = iss.fields || {};
+const rep = f.reporter || {};
+const selfUrl = (iss.self || '');
+const site = selfUrl.match(/https?:\/\/([^/]+)/);
+const desc = typeof f.description === 'string' ? f.description :
+  (f.description && f.description.content ? f.description.content.map(
+    b => (b.content||[]).map(c => c.text||'').join('')).join(' ') : '');
+return [{json: {
+  webhookEvent: 'jira:issue_created',
+  issue: { id: iss.id, key: iss.key, self: iss.self, fields: {
+    summary: f.summary || '', description: desc,
+    reporter: rep, project: f.project, issuetype: f.issuetype,
+    priority: f.priority, status: f.status }}
+}}];
+""".strip()
+
 SYSTEM = system_prompt()
 ASSEMBLE_JS = ASSEMBLE_JS.replace(
     "(SYSTEM_PROMPT_PLACEHOLDER)", json.dumps(SYSTEM, ensure_ascii=False))
@@ -274,16 +294,32 @@ nodes = [
         "httpMethod": "POST", "path": "agent-support",
         "responseMode": "onReceived", "options": {}}),
     # Email IMAP : désactivé tant que la credential IMAP n'est pas créée dans n8n.
-    # Sert pour Outlook (Support-IT@francoisesaget.com) - département François Saget.
-    # Réactiver (disabled=False) une fois la credential IMAP/Outlook créée.
     node("Email IMAP (Outlook)", "n8n-nodes-base.emailReadImap", 2, [-60, 380],
          {"options": {}},
          creds=({"imap": CREDS["imap"]} if "imap" in CREDS else None),
          disabled=("imap" not in CREDS)),
-    # Jira : pas de noeud trigger dédié (credential n8n impossible à configurer).
-    # Les tickets arrivent via Jira Automation -> POST /webhook/agent-support?platform=jira
-    # et sont traités par le Webhook multicanal + normaliseur.
-    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 540]),
+    # --- Polling Jira (toutes les 5 min) ---
+    # Contourne les problemes de credential Jira native et d'admin : utilise
+    # HTTP Basic Auth + JQL pour recuperer les tickets crees depuis le dernier poll.
+    node("Schedule Jira poll", "n8n-nodes-base.scheduleTrigger", 1.2, [-60, 540],
+         {"rule": {"interval": [{"field": "minutes", "minutesInterval": 5}]}}),
+    node("Jira: tickets recents", "n8n-nodes-base.httpRequest", 4.2, [220, 540], {
+         "method": "GET",
+         "url": "https://bzcmtc.atlassian.net/rest/api/3/search",
+         "authentication": "genericCredentialType",
+         "genericAuthType": "httpBasicAuth",
+         "sendQuery": True,
+         "queryParameters": {"parameters": [
+             {"name": "jql", "value": "created >= -6m ORDER BY created DESC"},
+             {"name": "maxResults", "value": "20"},
+             {"name": "fields", "value": "summary,description,reporter,project,issuetype,priority,status,created"}
+         ]},
+         "options": {}},
+         creds=({"httpBasicAuth": CREDS["jiraHttp"]} if "jiraHttp" in CREDS else None)),
+    node("Split issues", "n8n-nodes-base.splitOut", 1, [440, 540],
+         {"fieldToSplitOut": "issues", "options": {}}),
+    node("Dedoublonner Jira", "n8n-nodes-base.code", 2, [660, 540], {"jsCode": JIRA_DEDUP_JS}),
+    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 700]),
 
     # --- Pipeline principal ---
     node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [220, 240],
@@ -354,6 +390,10 @@ connections = merge_conn(
         ("TelegramTrigger", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
+        ("Schedule Jira poll", "Jira: tickets recents"),
+        ("Jira: tickets recents", "Split issues"),
+        ("Split issues", "Dedoublonner Jira"),
+        ("Dedoublonner Jira", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
         ("Normaliser (multicanal)", "PG: enregistrer evenement"),
         ("PG: enregistrer evenement", "PG: resoudre societe"),
