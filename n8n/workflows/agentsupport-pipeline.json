@@ -28,6 +28,12 @@
           "message"
         ],
         "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "5jPn6DhmFxwnpaKr",
+          "name": "Telegram Agent Support"
+        }
       }
     },
     {

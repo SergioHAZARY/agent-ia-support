@@ -241,7 +241,8 @@ nodes = [
 
     # --- Declencheurs multicanal ---
     node("Telegram Trigger", "n8n-nodes-base.telegramTrigger", 1.2, [-60, 60],
-         {"updates": ["message"], "additionalFields": {}}),
+         {"updates": ["message"], "additionalFields": {}},
+         creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
     node("Webhook multicanal", "n8n-nodes-base.webhook", 1.1, [-60, 220], {
         "httpMethod": "POST", "path": "agent-support",
         "responseMode": "onReceived", "options": {}}),
