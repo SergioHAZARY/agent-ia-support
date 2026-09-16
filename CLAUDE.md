@@ -12,13 +12,26 @@ Deux couches qui doivent rester cohérentes : un **document de conception** qui 
 | `agent-ia-support-artifact.html` | Version publiée du même document (artifact claude.ai). Générée depuis le source de l'artifact, pas depuis le fichier ci-dessus. |
 | `agent-ia-support-document-implementation1.docx` | Export pour diffusion. Régénéré depuis le HTML, jamais édité directement. **Encore en v1.0.** |
 | `docker-compose.yml`, `Caddyfile`, `.env.example` | Le socle : n8n, PostgreSQL, Qdrant, Caddy, sauvegardes |
-| `sql/` | `init.sh` (création de la base au premier démarrage), `001_schema.sql`, `002_seed.sql` |
+| `sql/` | `init.sh` + fichiers numérotés : `001_schema.sql`, `002_seed.sql`, `003_runbooks.sql`, `004_reporting_views.sql` |
 | `prompts/` | Prompts de triage et de reporting, avec leurs garde-fous post-modèle |
-| `n8n/README.md` | Spécification nœud par nœud des workflows ; `n8n/workflows/` reçoit les exports JSON |
+| `engine/` | Moteur de triage Python (`triage.py`, `guardrails.py`) — même logique que `n8n/guardrails.js`, mais testable sans Docker ni clé API |
+| `microservice-ad/` | Seul composant qui parle au contrôleur de domaine `FSAGET.PRI` en LDAPS ; s'installe sur le bastion, jamais sur le serveur n8n |
+| `tools/` | `agent-tools.json` (les outils exposés au modèle) et `n8n-agent.md` (câblage outil → sous-workflow, interdits en code) |
+| `skills/support-agent/` | Skill du projet Claude de pilotage (claude.ai) — reporting et administration, distinct du pipeline n8n |
+| `n8n/README.md` | Spécification nœud par nœud des workflows cible (WF-00…WF-11) ; `n8n/workflows/` reçoit les exports JSON |
+| `n8n/build_pipeline.py`, `n8n/sync.py` | Construisent et déploient le workflow unique déjà en production sur l'instance n8n cloud partagée — voir plus bas, il diverge du découpage WF-xx du README |
+| `.github/workflows/` | `ci.yml` (garde-fous + validation SQL/JSON) et `deploy-n8n.yml` (déploiement auto du pipeline n8n sur push) |
+| `CREDENTIALS.md`, `docs/installation-vm.md` | Accès à réunir, et procédure pas à pas pour la VM (pour qui ne connaît pas Docker/SSH) |
 
 **En cas de désaccord entre le code et le document, le document gagne** — ou bien on amende le document, explicitement. Une modification du schéma SQL implique une modification de la section 7 du HTML, et réciproquement.
 
-Il n'y a ni build, ni lint, ni suite de tests. La vérification se fait en exécutant le socle (`docker compose up -d`), ce qui n'est pas possible depuis le poste de développement Windows : ni Docker ni PostgreSQL n'y sont installés. Ne pas prétendre avoir validé le SQL sans l'avoir appliqué.
+Il n'y a ni build, ni lint. Il y a en revanche une vraie suite de tests, à faire tourner avant de prétendre qu'un changement fonctionne :
+
+```bash
+cd engine && python test_guardrails.py     # 24 tests des garde-fous, sans Docker ni clé API
+```
+
+La CI (`.github/workflows/ci.yml`) va plus loin qu'un développeur sur ce poste Windows ne peut le faire seul : elle lance un vrai conteneur PostgreSQL et y applique `001_schema.sql` → `004_reporting_views.sql`, et valide le JSON de `tools/agent-tools.json` et des `params_schema` des runbooks. Ni Docker ni PostgreSQL ne sont installés sur ce poste de développement — pour vérifier une modification SQL, la pousser et regarder tourner la CI plutôt que prétendre l'avoir validée localement.
 
 ## Conventions du socle
 
@@ -27,6 +40,7 @@ Il n'y a ni build, ni lint, ni suite de tests. La vérification se fait en exéc
 - Les contrôles de sécurité s'écrivent **en code n8n après la réponse du modèle**, et sont documentés dans le tableau de `prompts/triage.md`. Les rappeler dans le prompt ne suffit jamais.
 - Les workflows sont exportés en JSON dans `n8n/workflows/` et versionnés — c'est la seule façon de relire un changement de comportement.
 - Le schéma évolue par nouveaux fichiers numérotés dans `sql/` (`003_*.sql`, …), jamais en modifiant `001_schema.sql` une fois la base en production.
+- **`n8n/README.md` décrit la cible (WF-00 à WF-11, un sous-workflow par responsabilité) ; `n8n/build_pipeline.py` construit ce qui est réellement déployé** — un workflow unique `AgentSupport - Pipeline`, régénéré depuis `n8n/guardrails.js` et `prompts/triage.md`, poussé par CI (`deploy-n8n.yml`) sur l'instance n8n cloud **partagée**, toujours déployé inactif. `n8n/sync.py` refuse de toucher un workflow dont le nom ne commence pas par ce préfixe — ne jamais retirer ce garde-fou. Modifier le comportement du pipeline passe par `build_pipeline.py`, pas par l'éditeur n8n directement.
 
 ## Conventions d'édition du HTML
 
@@ -85,3 +99,5 @@ Ces cinq points de la §17 sont tranchés et ne sont plus à rouvrir :
 - **Interdits permanents** : liste figée, §10.
 
 Restent ouverts : politique 2FA (recommandation du document : gestionnaire de secrets d'équipe avec TOTP), taxonomie initiale à extraire de l'historique du canal pilote, rétention et information RGPD, traitement des pièces jointes.
+
+**Écart constaté entre décision et réalité de terrain** : le document tranche pour un n8n auto-hébergé en Docker Compose, mais `deploy-n8n.yml` déploie vers une instance **n8n cloud partagée** (variable `N8N_BASE_URL`, type `*.app.n8n.cloud`). Avant de faire une hypothèse sur l'hébergement réel, vérifier laquelle des deux est effectivement en service plutôt que de se fier à l'un ou l'autre.
