@@ -3,7 +3,7 @@
 Construit LE workflow unique 'AgentSupport - Pipeline' -> n8n/workflows/agentsupport-pipeline.json
 
 Multicanal (Telegram, Teams/Google Chat/ClickUp/Jira via webhook, email IMAP,
-manuel), Agent Claude natif n8n (lmChatAnthropic -> chainLlm), garde-fous en
+manuel), Agent Claude via OpenRouter (lmChatOpenRouter -> chainLlm), garde-fous en
 code, PostgreSQL pour events/tickets, et une branche reporting.
 
 Reproductible : la logique des garde-fous vient de n8n/guardrails.js, le prompt
@@ -204,6 +204,41 @@ const rows = $input.all().map(i => i.json);
 return [{ json: { count: rows.length, tickets: rows } }];
 """.strip()
 
+PREPARE_REPLY_JS = r"""
+// Prepare la reponse a envoyer au canal d'origine.
+// Toujours utiliser la proposed_response de Claude en priorite.
+// Ne fallback sur un message generique que si Claude n'a rien propose.
+const src = $('Normaliser (multicanal)').item.json;
+const parsed = $('Parser + garde-fous').item.json;
+const platform = src.platform || '';
+const level = parsed.autonomy_level || 'N3';
+
+// 1. Reponse de Claude (prioritaire)
+let reply = (parsed.proposed_response || '').trim();
+
+// 2. Fallback uniquement si Claude n'a rien propose
+if (!reply) {
+  if (level === 'N3') {
+    reply = "Je n'ai pas pu traiter votre demande automatiquement. "
+          + "Elle a ete transmise a un technicien IT qui vous repondra rapidement.";
+  } else {
+    reply = parsed.summary || "Votre demande a ete enregistree.";
+  }
+}
+
+// Chat ID : vient du trigger Telegram ou du champ external_id
+let chat_id = src.external_id || '';
+if (platform === 'telegram') {
+  try {
+    const tg = $('TelegramTrigger').item.json;
+    const msg = tg.message || tg.channel_post || {};
+    chat_id = String((msg.chat || {}).id || src.external_id || '');
+  } catch(e) { /* pas un trigger telegram */ }
+}
+
+return [{ json: { platform, chat_id, reply_text: reply } }];
+""".strip()
+
 JIRA_DEDUP_JS = r"""
 // Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).
 // Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).
@@ -315,14 +350,13 @@ nodes = [
     node("Assembler le contexte", "n8n-nodes-base.code", 2, [880, 240],
          {"jsCode": ASSEMBLE_JS}),
 
-    # --- Agent Claude natif ---
+    # --- Agent Claude via OpenRouter ---
     node("Agent Claude (triage)", "@n8n/n8n-nodes-langchain.chainLlm", 1.5, [1120, 240],
          {"promptType": "define", "text": "={{ $json.llm_prompt }}"}),
-    node("Modele Anthropic", "@n8n/n8n-nodes-langchain.lmChatAnthropic", 1.3, [1120, 460], {
-        "model": {"__rl": True, "mode": "id",
-                  "value": "claude-sonnet-4-20250514"},
+    node("Modele OpenRouter", "@n8n/n8n-nodes-langchain.lmChatOpenRouter", 1, [1120, 460], {
+        "model": "anthropic/claude-sonnet-4",
         "options": {"maxTokensToSample": 2000, "temperature": 0}},
-        creds=({"anthropicApi": CREDS["anthropicApi"]} if "anthropicApi" in CREDS else None)),
+        creds=({"openRouterApi": CREDS["openRouterApi"]} if "openRouterApi" in CREDS else None)),
 
     node("Parser + garde-fous", "n8n-nodes-base.code", 2, [1360, 240],
          {"jsCode": PARSE_GUARD_JS}),
@@ -353,6 +387,23 @@ nodes = [
     node("N1 valider puis executer", "n8n-nodes-base.noOp", 1, [2260, 260]),
     node("N2 guider", "n8n-nodes-base.noOp", 1, [2260, 400]),
     node("N3 escalader", "n8n-nodes-base.noOp", 1, [2260, 540]),
+
+    # --- Réponse Telegram ---
+    node("Preparer reponse", "n8n-nodes-base.code", 2, [2500, 300], {"jsCode": PREPARE_REPLY_JS}),
+    node("Est Telegram ?", "n8n-nodes-base.if", 2.3, [2720, 300], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "c2",
+                                       "leftValue": "={{ $json.platform }}",
+                                       "rightValue": "telegram",
+                                       "operator": {"type": "string", "operation": "equals"}}]},
+        "options": {}}),
+    node("Telegram: envoyer reponse", "n8n-nodes-base.telegram", 1.2, [2960, 300], {
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.reply_text }}",
+        "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False}},
+        creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
 
     # --- Branche reporting ---
     sticky("noteReport",
@@ -386,10 +437,16 @@ connections = merge_conn(
         ("Router par niveau", "N1 valider puis executer", 1),
         ("Router par niveau", "N2 guider", 2),
         ("Router par niveau", "N3 escalader", 3),
+        ("N0 repondre", "Preparer reponse"),
+        ("N1 valider puis executer", "Preparer reponse"),
+        ("N2 guider", "Preparer reponse"),
+        ("N3 escalader", "Preparer reponse"),
+        ("Preparer reponse", "Est Telegram ?"),
+        ("Est Telegram ?", "Telegram: envoyer reponse", 0),
         ("Webhook reporting", "PG: tickets en cours"),
         ("PG: tickets en cours", "Formater le rapport"),
     ]),
-    conn([("Modele Anthropic", "Agent Claude (triage)", 0, "ai_languageModel")]),
+    conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
 )
 
 workflow = {

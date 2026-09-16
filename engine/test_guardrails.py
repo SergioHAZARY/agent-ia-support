@@ -52,7 +52,7 @@ check("confiance 0.9 -> reste N1", r.triage["autonomy_level"] == "N1")
 
 print("== plafond de maturite ==")
 r = apply_guardrails(triage(), ctx(max_autonomy="N3"))
-check("societe P1 (N3) -> N1 rabaisse en N3", r.triage["autonomy_level"] == "N3")
+check("societe P1 (N3) -> N1 autorise (agent choisit)", r.triage["autonomy_level"] == "N1")
 r = apply_guardrails(triage(autonomy_level="N2", runbook_code=None), ctx(max_autonomy="N2"))
 check("societe P2 (N2) -> N2 autorise", r.triage["autonomy_level"] == "N2")
 

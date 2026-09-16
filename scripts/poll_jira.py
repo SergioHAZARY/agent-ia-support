@@ -2,16 +2,22 @@
 """
 Polling Jira Bazarchic → Supabase (table events).
 
-Récupère les tickets Jira créés/mis à jour depuis le dernier poll,
-les normalise, et les insère dans la table events de Supabase.
-Le pipeline n8n traitera ces events via le Schedule Trigger.
+Récupère TOUS les tickets Jira (À Faire, En cours, Code Review, Bloqué,
+A Tester, A Livrer en Prod, Terminé, etc.) avec pagination, les normalise,
+et les insère dans Supabase. Le dédoublonnage est fait par ON CONFLICT.
 
-Ce script tourne en local (ou sur un serveur autorisé par la politique
-IP Atlassian). n8n cloud est bloqué par les restrictions IP Jira.
+Mode --init   : import initial de TOUS les tickets existants (peut être long)
+Mode --loop N : poll incrémental toutes les N secondes (défaut 300 = 5 min)
+Mode par défaut : un seul poll incrémental (tickets mis à jour < 10 min)
+
+Ce script tourne en local car n8n cloud est bloqué par les restrictions IP Jira.
 
 Usage :
-  python scripts/poll_jira.py              # un seul poll
-  python scripts/poll_jira.py --loop 300   # boucle toutes les 300s (5 min)
+  set JIRA_TOKEN=ATATT3x...
+  set PG_PASS=Orbyone_419
+  python scripts/poll_jira.py --init        # import initial complet
+  python scripts/poll_jira.py --loop 300    # poll continu (5 min)
+  python scripts/poll_jira.py               # un seul poll incrémental
 """
 import json
 import os
@@ -21,7 +27,7 @@ import urllib.request
 import urllib.error
 import base64
 
-# --- Configuration (variables d'env ou valeurs par défaut) ---
+# --- Configuration ---
 JIRA_SITE = os.environ.get("JIRA_SITE", "bzcmtc.atlassian.net")
 JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "h.sergio.ext@bazarchic.com")
 JIRA_TOKEN = os.environ.get("JIRA_TOKEN", "")
@@ -32,13 +38,10 @@ PG_DB = os.environ.get("PG_DB", "postgres")
 PG_USER = os.environ.get("PG_USER", "postgres.ztmzhvzjfsncwuvzbhua")
 PG_PASS = os.environ.get("PG_PASS", "")
 
-# JQL : tickets créés ou mis à jour dans les 10 dernières minutes
-JQL = os.environ.get("JIRA_JQL", "updated >= -10m ORDER BY updated DESC")
-MAX_RESULTS = 50
+PAGE_SIZE = 100
 
 
 def jira_get(path, params=None):
-    """GET sur l'API Jira avec Basic Auth."""
     url = f"https://{JIRA_SITE}{path}"
     if params:
         url += "?" + "&".join(f"{k}={urllib.request.quote(str(v))}" for k, v in params.items())
@@ -46,17 +49,15 @@ def jira_get(path, params=None):
     cred = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
     req.add_header("Authorization", f"Basic {cred}")
     req.add_header("Accept", "application/json")
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode())
 
 
 def extract_description(desc):
-    """Extrait le texte brut d'un champ description (ADF ou string)."""
     if not desc:
         return ""
     if isinstance(desc, str):
         return desc
-    # Atlassian Document Format
     if isinstance(desc, dict) and "content" in desc:
         parts = []
         for block in desc.get("content", []):
@@ -68,35 +69,41 @@ def extract_description(desc):
 
 
 def normalize_issue(issue):
-    """Transforme un issue Jira en event normalisé."""
     f = issue.get("fields", {})
     rep = f.get("reporter") or {}
     self_url = issue.get("self", "")
-    site_match = self_url.split("/rest/")[0].replace("https://", "").replace("http://", "") if self_url else JIRA_SITE
+    site = self_url.split("/rest/")[0].replace("https://", "").replace("http://", "") if self_url else JIRA_SITE
+    status = (f.get("status") or {}).get("name", "")
+    priority = (f.get("priority") or {}).get("name", "")
+    project = (f.get("project") or {}).get("key", "")
+    itype = (f.get("issuetype") or {}).get("name", "")
+
+    summary = f.get("summary", "")
+    desc = extract_description(f.get("description"))
+    body = f"[{project}] [{status}] [{itype}] {summary}"
+    if desc:
+        body += f" — {desc}"
 
     return {
         "platform": "jira",
-        "external_id": site_match,
+        "external_id": site,
         "source_message_id": issue.get("key", str(issue.get("id", ""))),
         "sender_raw": rep.get("displayName", rep.get("name", "")),
-        "body": (f.get("summary", "") + " — " + extract_description(f.get("description"))).strip(" —"),
+        "body": body[:2000],
     }
 
 
-def insert_events(events):
-    """Insère les events dans Supabase via pg8000."""
-    try:
-        import pg8000
-    except ImportError:
-        print("ERREUR: pip install pg8000", file=sys.stderr)
-        sys.exit(1)
-
-    conn = pg8000.connect(
+def get_pg_conn():
+    import pg8000
+    return pg8000.connect(
         host=PG_HOST, port=PG_PORT, database=PG_DB,
         user=PG_USER, password=PG_PASS, ssl_context=True
     )
-    conn.autocommit = True
 
+
+def insert_events(events):
+    conn = get_pg_conn()
+    conn.autocommit = True
     inserted = 0
     for ev in events:
         try:
@@ -116,23 +123,55 @@ def insert_events(events):
             )
             if result and result[0][0] is not None:
                 inserted += 1
-                print(f"  + {ev['source_message_id']:15s} {ev['body'][:60]}")
+                print(f"  + {ev['source_message_id']:18s} {ev['body'][:70]}")
         except Exception as e:
             print(f"  ! {ev['source_message_id']}: {e}", file=sys.stderr)
-
     conn.close()
     return inserted
 
 
-def poll_once():
-    """Un cycle de polling."""
-    print(f"[{time.strftime('%H:%M:%S')}] Polling Jira ({JIRA_SITE})...")
-    try:
-        data = jira_get("/rest/api/3/search/jql", {
-            "jql": JQL,
-            "maxResults": MAX_RESULTS,
+def fetch_all_issues(jql):
+    """Récupère tous les tickets avec pagination (nextPageToken pour /search/jql)."""
+    all_issues = []
+    next_token = None
+    while True:
+        params = {
+            "jql": jql,
+            "maxResults": PAGE_SIZE,
             "fields": "summary,description,reporter,project,issuetype,priority,status,created,updated"
-        })
+        }
+        if next_token:
+            params["nextPageToken"] = next_token
+        data = jira_get("/rest/api/3/search/jql", params)
+        issues = data.get("issues", [])
+        all_issues.extend(issues)
+        print(f"  ... {len(all_issues)} tickets chargés")
+        next_token = data.get("nextPageToken")
+        is_last = data.get("isLast", True)
+        if is_last or not issues or not next_token:
+            break
+    return all_issues
+
+
+def poll_init():
+    """Import initial : TOUS les tickets, tous statuts, tous projets."""
+    print(f"[{time.strftime('%H:%M:%S')}] === IMPORT INITIAL Jira ({JIRA_SITE}) ===")
+    print("  Récupération de TOUS les tickets (toutes les statuts)...")
+    jql = "created IS NOT EMPTY ORDER BY created ASC"
+    issues = fetch_all_issues(jql)
+    print(f"  Total: {len(issues)} tickets Jira")
+    events = [normalize_issue(iss) for iss in issues]
+    inserted = insert_events(events)
+    print(f"  === {inserted} nouveaux events insérés (sur {len(events)} tickets) ===")
+    return inserted
+
+
+def poll_incremental():
+    """Poll incrémental : tickets mis à jour dans les 10 dernières minutes."""
+    print(f"[{time.strftime('%H:%M:%S')}] Polling Jira ({JIRA_SITE})...")
+    jql = "updated >= -10m ORDER BY updated DESC"
+    try:
+        issues = fetch_all_issues(jql)
     except urllib.error.HTTPError as e:
         print(f"  Erreur Jira: {e.code} {e.read().decode()[:200]}", file=sys.stderr)
         return 0
@@ -140,10 +179,8 @@ def poll_once():
         print(f"  Erreur: {e}", file=sys.stderr)
         return 0
 
-    issues = data.get("issues", [])
-    print(f"  {len(issues)} tickets trouvés (JQL: {JQL})")
-
     if not issues:
+        print("  Aucun ticket mis à jour")
         return 0
 
     events = [normalize_issue(iss) for iss in issues]
@@ -154,21 +191,29 @@ def poll_once():
 
 def main():
     if not JIRA_TOKEN:
-        print("JIRA_TOKEN manquant. Définir la variable d'environnement.", file=sys.stderr)
-        print("  set JIRA_TOKEN=ATATT3x...", file=sys.stderr)
+        print("JIRA_TOKEN manquant. set JIRA_TOKEN=ATATT3x...", file=sys.stderr)
         sys.exit(1)
     if not PG_PASS:
-        print("PG_PASS manquant. Définir la variable d'environnement.", file=sys.stderr)
+        print("PG_PASS manquant. set PG_PASS=...", file=sys.stderr)
         sys.exit(1)
 
-    if len(sys.argv) > 1 and sys.argv[1] == "--loop":
-        interval = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+    try:
+        import pg8000  # noqa
+    except ImportError:
+        print("ERREUR: pip install pg8000", file=sys.stderr)
+        sys.exit(1)
+
+    if "--init" in sys.argv:
+        poll_init()
+    elif "--loop" in sys.argv:
+        idx = sys.argv.index("--loop")
+        interval = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 else 300
         print(f"Mode boucle : poll toutes les {interval}s. Ctrl+C pour arrêter.")
         while True:
-            poll_once()
+            poll_incremental()
             time.sleep(interval)
     else:
-        poll_once()
+        poll_incremental()
 
 
 if __name__ == "__main__":

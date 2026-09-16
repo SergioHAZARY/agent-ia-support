@@ -21,6 +21,9 @@ backups/*
 !backups/.gitkeep
 *.sql.gz
 
+# Token cache Microsoft Graph (OAuth device code flow)
+scripts/.outlook_token_cache.json
+
 # --- Généré / local ----------------------------------------------------------
 # Export DOCX du document — régénéré depuis le HTML
 *.docx

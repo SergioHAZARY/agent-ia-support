@@ -50,9 +50,10 @@ class TriageContext:
 _ORDER = {"N0": 0, "N1": 1, "N2": 2, "N3": 3}
 # Ce qu'une societe a le droit de faire selon son plafond.
 _ALLOWED_BY_CAP = {
-    "N3": {"N3"},                    # P1 : triage seul
+    "N3": {"N0", "N1", "N2", "N3"},  # P1+ : tous niveaux, l'agent choisit
     "N2": {"N0", "N2", "N3"},        # P2 : repond et guide
-    "N1": {"N0", "N1", "N2", "N3"},  # P3 : execute
+    "N1": {"N0", "N1", "N3"},        # P3 : execute
+    "N0": {"N0", "N3"},              # P0 : repond seulement
 }
 
 

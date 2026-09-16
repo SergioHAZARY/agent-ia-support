@@ -16,7 +16,7 @@ function checkForbidden(text) {
 }
 
 const ORDER = { N0:0, N1:1, N2:2, N3:3 };
-const ALLOWED_BY_CAP = { N3:['N3'], N2:['N0','N2','N3'], N1:['N0','N1','N2','N3'] };
+const ALLOWED_BY_CAP = { N3:['N0','N1','N2','N3'], N2:['N0','N2','N3'], N1:['N0','N1','N3'], N0:['N0','N3'] };
 
 function downgrade(t, adj, reason) {
   if (t.autonomy_level !== 'N3') adj.push('N3 force : ' + reason + ' (etait ' + t.autonomy_level + ')');
