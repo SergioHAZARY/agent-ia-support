@@ -62,6 +62,16 @@ def clean(wf):
     return {k: wf[k] for k in ("name", "nodes", "connections", "settings") if k in wf}
 
 
+def activate(wf_id):
+    """Desactive puis reactive pour forcer le remontage des webhooks sur n8n cloud."""
+    call("PATCH", f"/workflows/{wf_id}", body={"active": False})
+    import time; time.sleep(2)
+    st, body = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
+    activated = isinstance(body, dict) and body.get("active") is True
+    print(f"  {'ACTIF' if activated else 'INACTIF':6} (toggle off/on pour webhooks)")
+    return activated
+
+
 def upsert(path, existing):
     wf = json.load(open(path, encoding="utf-8"))
     name = wf.get("name", "")
@@ -70,13 +80,18 @@ def upsert(path, existing):
         return False
     payload = clean(wf)
     if name in existing:
-        st, body = call("PUT", f"/workflows/{existing[name]}", body=payload)
+        wf_id = existing[name]
+        st, body = call("PUT", f"/workflows/{wf_id}", body=payload)
         action = "MAJ "
     else:
         st, body = call("POST", "/workflows", body=payload)
+        wf_id = body.get("id") if isinstance(body, dict) else None
         action = "CREE"
     ok = isinstance(body, dict) and body.get("id")
     print(f"  {action} {name:40} -> {st} {'id='+body['id'] if ok else body}")
+    # Toujours reactiver apres MAJ pour remonter les webhooks
+    if ok and wf_id:
+        activate(wf_id)
     return bool(ok)
 
 
