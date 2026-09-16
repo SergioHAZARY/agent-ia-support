@@ -16,7 +16,7 @@
       }
     },
     {
-      "name": "Telegram Trigger",
+      "name": "TelegramTrigger",
       "type": "n8n-nodes-base.telegramTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -453,7 +453,7 @@
     }
   ],
   "connections": {
-    "Telegram Trigger": {
+    "TelegramTrigger": {
       "main": [
         [
           {

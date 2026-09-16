@@ -240,7 +240,7 @@ nodes = [
     sticky("note", NOTE, [-60, -320], w=680, h=320),
 
     # --- Declencheurs multicanal ---
-    node("Telegram Trigger", "n8n-nodes-base.telegramTrigger", 1.2, [-60, 60],
+    node("TelegramTrigger", "n8n-nodes-base.telegramTrigger", 1.2, [-60, 60],
          {"updates": ["message"], "additionalFields": {}},
          creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
     node("Webhook multicanal", "n8n-nodes-base.webhook", 1.1, [-60, 220], {
@@ -320,7 +320,7 @@ nodes = [
 
 connections = merge_conn(
     conn([
-        ("Telegram Trigger", "Normaliser (multicanal)"),
+        ("TelegramTrigger", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Email IMAP", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
