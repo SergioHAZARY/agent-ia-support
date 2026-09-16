@@ -55,8 +55,7 @@
       ],
       "parameters": {
         "options": {}
-      },
-      "disabled": true
+      }
     },
     {
       "name": "Declencheur manuel",
