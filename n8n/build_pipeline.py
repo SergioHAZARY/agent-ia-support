@@ -99,11 +99,24 @@ if (j.message || j.channel_post) {                 // Telegram
   const iss = j.issue || {};
   const f = iss.fields || {};
   const rep = f.reporter || {};
-  // external_id = site Atlassian (extrait du self URL de l'issue)
   const selfUrl = (iss.self || '');
   const site = selfUrl.match(/https?:\/\/([^/]+)/);
   ev = { platform:'jira',
     external_id: site ? site[1] : 'jira',
+    source_message_id: String(iss.key || iss.id || Date.now()),
+    sender_external_id: String(rep.emailAddress || rep.accountId || ''),
+    sender_raw: String(rep.displayName || rep.name || ''),
+    message_body: (f.summary || '') + (f.description ? ' — ' + f.description : '') };
+} else if (j.headers && j.body && (j.body.issue || j.body.webhookEvent)) {
+  // Jira via Webhook multicanal (Jira Automation -> POST /agent-support?platform=jira)
+  const b = j.body;
+  const iss = b.issue || {};
+  const f = iss.fields || {};
+  const rep = f.reporter || {};
+  const selfUrl = (iss.self || '');
+  const site = selfUrl.match(/https?:\/\/([^/]+)/);
+  ev = { platform:'jira',
+    external_id: site ? site[1] : ((j.query||{}).platform === 'jira' ? 'bzcmtc.atlassian.net' : 'jira'),
     source_message_id: String(iss.key || iss.id || Date.now()),
     sender_external_id: String(rep.emailAddress || rep.accountId || ''),
     sender_raw: String(rep.displayName || rep.name || ''),
@@ -267,14 +280,10 @@ nodes = [
          {"options": {}},
          creds=({"imap": CREDS["imap"]} if "imap" in CREDS else None),
          disabled=("imap" not in CREDS)),
-    # Jira Trigger : écoute les créations/mises à jour de tickets Bazarchic.
-    # Désactivé tant que la credential Jira n'est pas créée dans n8n.
-    node("JiraTrigger", "n8n-nodes-base.jiraTrigger", 1, [-60, 540],
-         {"events": ["jira:issue_created", "jira:issue_updated"],
-          "additionalFields": {}},
-         creds=({"jiraSoftwareCloudApi": CREDS["jira"]} if "jira" in CREDS else None),
-         disabled=("jira" not in CREDS)),
-    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 700]),
+    # Jira : pas de noeud trigger dédié (credential n8n impossible à configurer).
+    # Les tickets arrivent via Jira Automation -> POST /webhook/agent-support?platform=jira
+    # et sont traités par le Webhook multicanal + normaliseur.
+    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 540]),
 
     # --- Pipeline principal ---
     node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [220, 240],
@@ -345,7 +354,6 @@ connections = merge_conn(
         ("TelegramTrigger", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
-        ("JiraTrigger", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
         ("Normaliser (multicanal)", "PG: enregistrer evenement"),
         ("PG: enregistrer evenement", "PG: resoudre societe"),
