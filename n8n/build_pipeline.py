@@ -298,28 +298,10 @@ nodes = [
          {"options": {}},
          creds=({"imap": CREDS["imap"]} if "imap" in CREDS else None),
          disabled=("imap" not in CREDS)),
-    # --- Polling Jira (toutes les 5 min) ---
-    # Contourne les problemes de credential Jira native et d'admin : utilise
-    # HTTP Basic Auth + JQL pour recuperer les tickets crees depuis le dernier poll.
-    node("Schedule Jira poll", "n8n-nodes-base.scheduleTrigger", 1.2, [-60, 540],
-         {"rule": {"interval": [{"field": "minutes", "minutesInterval": 5}]}}),
-    node("Jira: tickets recents", "n8n-nodes-base.httpRequest", 4.2, [220, 540], {
-         "method": "GET",
-         "url": "https://bzcmtc.atlassian.net/rest/api/3/search",
-         "authentication": "genericCredentialType",
-         "genericAuthType": "httpBasicAuth",
-         "sendQuery": True,
-         "queryParameters": {"parameters": [
-             {"name": "jql", "value": "created >= -6m ORDER BY created DESC"},
-             {"name": "maxResults", "value": "20"},
-             {"name": "fields", "value": "summary,description,reporter,project,issuetype,priority,status,created"}
-         ]},
-         "options": {}},
-         creds=({"httpBasicAuth": CREDS["jiraHttp"]} if "jiraHttp" in CREDS else None)),
-    node("Split issues", "n8n-nodes-base.splitOut", 1, [440, 540],
-         {"fieldToSplitOut": "issues", "options": {}}),
-    node("Dedoublonner Jira", "n8n-nodes-base.code", 2, [660, 540], {"jsCode": JIRA_DEDUP_JS}),
-    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 700]),
+    # Jira : le polling est fait par scripts/poll_jira.py (local) car n8n cloud
+    # est bloqué par les restrictions IP Atlassian. Les events arrivent directement
+    # dans la table events de Supabase.
+    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 540]),
 
     # --- Pipeline principal ---
     node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [220, 240],
@@ -390,10 +372,6 @@ connections = merge_conn(
         ("TelegramTrigger", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
-        ("Schedule Jira poll", "Jira: tickets recents"),
-        ("Jira: tickets recents", "Split issues"),
-        ("Split issues", "Dedoublonner Jira"),
-        ("Dedoublonner Jira", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
         ("Normaliser (multicanal)", "PG: enregistrer evenement"),
         ("PG: enregistrer evenement", "PG: resoudre societe"),

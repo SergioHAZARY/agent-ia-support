@@ -65,95 +65,12 @@
       "disabled": true
     },
     {
-      "name": "Schedule Jira poll",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.2,
-      "position": [
-        -60,
-        540
-      ],
-      "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "field": "minutes",
-              "minutesInterval": 5
-            }
-          ]
-        }
-      }
-    },
-    {
-      "name": "Jira: tickets recents",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        220,
-        540
-      ],
-      "parameters": {
-        "method": "GET",
-        "url": "https://bzcmtc.atlassian.net/rest/api/3/search",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpBasicAuth",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {
-              "name": "jql",
-              "value": "created >= -6m ORDER BY created DESC"
-            },
-            {
-              "name": "maxResults",
-              "value": "20"
-            },
-            {
-              "name": "fields",
-              "value": "summary,description,reporter,project,issuetype,priority,status,created"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "credentials": {
-        "httpBasicAuth": {
-          "id": "VRBk6zsXdR3deqJ7",
-          "name": "Jira Bazarchic (HTTP Basic)"
-        }
-      }
-    },
-    {
-      "name": "Split issues",
-      "type": "n8n-nodes-base.splitOut",
-      "typeVersion": 1,
-      "position": [
-        440,
-        540
-      ],
-      "parameters": {
-        "fieldToSplitOut": "issues",
-        "options": {}
-      }
-    },
-    {
-      "name": "Dedoublonner Jira",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        660,
-        540
-      ],
-      "parameters": {
-        "jsCode": "// Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).\n// Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).\nconst iss = $json;\nconst f = iss.fields || {};\nconst rep = f.reporter || {};\nconst selfUrl = (iss.self || '');\nconst site = selfUrl.match(/https?:\\/\\/([^/]+)/);\nconst desc = typeof f.description === 'string' ? f.description :\n  (f.description && f.description.content ? f.description.content.map(\n    b => (b.content||[]).map(c => c.text||'').join('')).join(' ') : '');\nreturn [{json: {\n  webhookEvent: 'jira:issue_created',\n  issue: { id: iss.id, key: iss.key, self: iss.self, fields: {\n    summary: f.summary || '', description: desc,\n    reporter: rep, project: f.project, issuetype: f.issuetype,\n    priority: f.priority, status: f.status }}\n}}];"
-      }
-    },
-    {
       "name": "Declencheur manuel",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
         -60,
-        700
+        540
       ],
       "parameters": {}
     },
@@ -559,50 +476,6 @@
       ]
     },
     "Email IMAP (Outlook)": {
-      "main": [
-        [
-          {
-            "node": "Normaliser (multicanal)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Schedule Jira poll": {
-      "main": [
-        [
-          {
-            "node": "Jira: tickets recents",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Jira: tickets recents": {
-      "main": [
-        [
-          {
-            "node": "Split issues",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Split issues": {
-      "main": [
-        [
-          {
-            "node": "Dedoublonner Jira",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Dedoublonner Jira": {
       "main": [
         [
           {
