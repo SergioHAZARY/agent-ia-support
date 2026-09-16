@@ -271,7 +271,7 @@ nodes = [
          {"promptType": "define", "text": "={{ $json.llm_prompt }}"}),
     node("Modele Anthropic", "@n8n/n8n-nodes-langchain.lmChatAnthropic", 1.3, [1120, 460], {
         "model": {"__rl": True, "mode": "id",
-                  "value": "={{ $env.ANTHROPIC_MODEL || 'claude-sonnet-5' }}"},
+                  "value": "claude-sonnet-4-20250514"},
         "options": {"maxTokensToSample": 2000, "temperature": 0}},
         creds=({"anthropicApi": CREDS["anthropicApi"]} if "anthropicApi" in CREDS else None)),
 
