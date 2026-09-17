@@ -82,6 +82,50 @@ def merge_conn(*cs):
 # --------------------------------------------------------------------------- #
 # Code des noeuds
 # --------------------------------------------------------------------------- #
+FILTER_TELEGRAM_JS = r"""
+// Filtre Telegram : ne repondre que si le bot est mentionne (@itmg_support_bot)
+// ou si c'est un message prive (DM). Ignorer les messages de groupe sans mention.
+const j = $json;
+const t = j.message || j.channel_post || {};
+const chat = t.chat || {};
+const chatType = chat.type || '';  // 'private', 'group', 'supergroup'
+const text = (t.text || t.caption || '').toLowerCase();
+const BOT_USERNAME = 'itmg_support_bot';
+
+// En DM (private) -> toujours repondre
+if (chatType === 'private') {
+  return [{ json: j }];
+}
+
+// En groupe/supergroupe -> repondre seulement si le bot est mentionne
+// Verifier dans le texte
+const mentionInText = text.includes('@' + BOT_USERNAME);
+
+// Verifier dans les entites (mentions structurees Telegram)
+const entities = t.entities || t.caption_entities || [];
+const mentionInEntities = entities.some(e => {
+  if (e.type === 'mention') {
+    const mentioned = (t.text || '').substring(e.offset, e.offset + e.length).toLowerCase();
+    return mentioned === '@' + BOT_USERNAME;
+  }
+  return false;
+});
+
+// Verifier si c'est une reponse a un message du bot
+const replyToBot = (t.reply_to_message || {}).from && (t.reply_to_message.from.is_bot === true);
+
+if (mentionInText || mentionInEntities || replyToBot) {
+  // Nettoyer le @mention du texte pour ne garder que la question
+  if (t.text) {
+    t.text = t.text.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
+  }
+  return [{ json: Object.assign({}, j, { message: t }) }];
+}
+
+// Pas de mention -> on ignore (retourne vide)
+return [];
+""".strip()
+
 NORMALIZE_JS = r"""
 // Normalisation MULTICANAL vers un evenement unique.
 // Detecte la source d'apres la forme de l'entree.
@@ -186,12 +230,37 @@ const ctx = $('Assembler le contexte').item.json.ctx;
 const src = $('Assembler le contexte').item.json.source;
 let modelText = $json.text || $json.output || '';
 if (!modelText && Array.isArray($json.content)) modelText = $json.content.map(b=>b.text||'').join('');
+
+// Parsing robuste : extraire le JSON meme si le modele a ajoute du texte autour
+// Etape 0 : stripper les blocs markdown ```json ... ```
+modelText = modelText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+
 let raw;
 try { raw = JSON.parse(modelText); }
 catch (e) {
-  raw = { is_ticket:true, title:'triage illisible', summary:String(modelText).slice(0,200),
-          category:'information', subcategory:'question_procedure', priority:'p3',
-          autonomy_level:'N3', confidence:0, alert:'reponse du modele non parsable' };
+  // Essayer d'extraire un objet JSON du texte
+  const jsonMatch = modelText.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try { raw = JSON.parse(jsonMatch[0]); }
+    catch (e2) { raw = null; }
+  }
+  if (!raw) {
+    // Dernier recours : le modele a repondu en texte libre
+    const txt = String(modelText).trim();
+    if (txt.length > 0 && txt.length < 500) {
+      raw = { is_ticket:false, proposed_response:txt, confidence:0.8 };
+    } else {
+      raw = { is_ticket:true, title:'triage illisible', summary:txt.slice(0,200),
+              category:'information', subcategory:'question_procedure', priority:'p3',
+              autonomy_level:'N3', confidence:0.5, alert:'reponse du modele non parsable en JSON' };
+    }
+  }
+}
+
+// Garantir les champs obligatoires (title et summary sont NOT NULL dans la table)
+if (raw.is_ticket !== false) {
+  if (!raw.title) raw.title = raw.summary || src.message_body.slice(0, 120) || 'Demande sans titre';
+  if (!raw.summary) raw.summary = raw.title || '';
 }
 const r = applyGuardrails(raw, ctx);
 return [{ json: Object.assign({}, r.triage, {
@@ -204,26 +273,42 @@ const rows = $input.all().map(i => i.json);
 return [{ json: { count: rows.length, tickets: rows } }];
 """.strip()
 
-PREPARE_REPLY_JS = r"""
-// Prepare la reponse a envoyer au canal d'origine.
-// Toujours utiliser la proposed_response de Claude en priorite.
-// Ne fallback sur un message generique que si Claude n'a rien propose.
+PREPARE_REPLY_TICKET_JS = r"""
+// Prepare la reponse pour un TICKET (is_ticket = true).
+// NEURONTRIAGE v1 : Branche A (resolved) ou Branche B (escalated).
 const src = $('Normaliser (multicanal)').item.json;
 const parsed = $('Parser + garde-fous').item.json;
 const platform = src.platform || '';
 const level = parsed.autonomy_level || 'N3';
+const status = parsed.resolution_status || (level === 'N3' ? 'escalated' : 'resolved');
+
+// Recuperer le ticket_ref depuis PG si disponible
+let ticketRef = '';
+try {
+  const pg = $('PG: creer le ticket').item.json;
+  ticketRef = pg.ref || ('IT-' + (pg.id || '').toString().slice(0, 5));
+} catch(e) { ticketRef = 'IT-' + Date.now().toString().slice(-5); }
 
 // 1. Reponse de Claude (prioritaire)
 let reply = (parsed.proposed_response || '').trim();
 
 // 2. Fallback uniquement si Claude n'a rien propose
 if (!reply) {
-  if (level === 'N3') {
-    reply = "Je n'ai pas pu traiter votre demande automatiquement. "
-          + "Elle a ete transmise a un technicien IT qui vous repondra rapidement.";
+  if (status === 'escalated' || level === 'N3') {
+    const reason = parsed.escalation_reason || 'intervention humaine requise';
+    reply = "J'ai analyse votre demande et je ne suis pas en mesure de la resoudre "
+          + "a mon niveau. Raison : " + reason + ".\n\n"
+          + "Votre demande a ete escaladee vers un technicien IT qui prendra le relais.\n"
+          + "Reference : " + ticketRef;
   } else {
     reply = parsed.summary || "Votre demande a ete enregistree.";
   }
+}
+
+// 3. Ajouter le statut en pied de message pour les escalades
+if (status === 'escalated' && reply.indexOf('technicien') === -1) {
+  reply += "\n\n---\nCe probleme necessite l'intervention d'un technicien IT. "
+        + "Reference : " + ticketRef;
 }
 
 // Chat ID : vient du trigger Telegram ou du champ external_id
@@ -236,7 +321,35 @@ if (platform === 'telegram') {
   } catch(e) { /* pas un trigger telegram */ }
 }
 
-return [{ json: { platform, chat_id, reply_text: reply } }];
+return [{ json: { platform, chat_id, reply_text: reply, resolution_status: status, ticket_ref: ticketRef } }];
+""".strip()
+
+PREPARE_REPLY_NONTICKET_JS = r"""
+// Prepare la reponse pour un NON-TICKET (salutations, remerciements, etc.)
+// L'agent repond naturellement sans creer de ticket.
+const src = $('Normaliser (multicanal)').item.json;
+const parsed = $('Parser + garde-fous').item.json;
+const platform = src.platform || '';
+
+// Reponse de Claude (le prompt dit toujours de remplir proposed_response)
+let reply = (parsed.proposed_response || '').trim();
+
+// Fallback si le modele n'a rien propose
+if (!reply) {
+  reply = "Bonjour ! Je suis l'agent de support IT. Comment puis-je vous aider ?";
+}
+
+// Chat ID
+let chat_id = src.external_id || '';
+if (platform === 'telegram') {
+  try {
+    const tg = $('TelegramTrigger').item.json;
+    const msg = tg.message || tg.channel_post || {};
+    chat_id = String((msg.chat || {}).id || src.external_id || '');
+  } catch(e) {}
+}
+
+return [{ json: { platform, chat_id, reply_text: reply, resolution_status: 'not_a_ticket', ticket_ref: '' } }];
 """.strip()
 
 JIRA_DEDUP_JS = r"""
@@ -338,8 +451,12 @@ nodes = [
     # dans la table events de Supabase.
     node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 540]),
 
+    # --- Filtre Telegram (mention @itmg_support_bot ou DM) ---
+    node("Filtre Telegram (mention)", "n8n-nodes-base.code", 2, [100, 60],
+         {"jsCode": FILTER_TELEGRAM_JS}),
+
     # --- Pipeline principal ---
-    node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [220, 240],
+    node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [280, 240],
          {"jsCode": NORMALIZE_JS}),
     pg_node("PG: enregistrer evenement", [440, 240], PG_EVENT_SQL,
             "={{ [$json.source_message_id, $json.sender_raw, $json.message_body, "
@@ -369,7 +486,23 @@ nodes = [
                                        "operator": {"type": "boolean", "operation": "true",
                                                     "singleValue": True}}]},
         "options": {}}),
-    node("Ignore (pas un ticket)", "n8n-nodes-base.noOp", 1, [1800, 40]),
+    # Non-ticket : repondre naturellement (salutations, merci, etc.)
+    node("Preparer reponse (non-ticket)", "n8n-nodes-base.code", 2, [1800, 40],
+         {"jsCode": PREPARE_REPLY_NONTICKET_JS}),
+    node("Est Telegram ? (non-ticket)", "n8n-nodes-base.if", 2.3, [2060, 40], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "c3",
+                                       "leftValue": "={{ $json.platform }}",
+                                       "rightValue": "telegram",
+                                       "operator": {"type": "string", "operation": "equals"}}]},
+        "options": {}}),
+    node("Telegram: repondre (non-ticket)", "n8n-nodes-base.telegram", 1.2, [2300, 40], {
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.reply_text }}",
+        "additionalFields": {"appendAttribution": False}},
+        creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
     pg_node("PG: creer le ticket", [1800, 300], PG_TICKET_SQL,
             "={{ [$json._source.tenant_id || null, $json.title, $json.summary, "
             "$json.category, $json.subcategory, $json.priority, "
@@ -389,7 +522,7 @@ nodes = [
     node("N3 escalader", "n8n-nodes-base.noOp", 1, [2260, 540]),
 
     # --- Réponse Telegram ---
-    node("Preparer reponse", "n8n-nodes-base.code", 2, [2500, 300], {"jsCode": PREPARE_REPLY_JS}),
+    node("Preparer reponse", "n8n-nodes-base.code", 2, [2500, 300], {"jsCode": PREPARE_REPLY_TICKET_JS}),
     node("Est Telegram ?", "n8n-nodes-base.if", 2.3, [2720, 300], {
         "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
                        "combinator": "and",
@@ -420,7 +553,8 @@ nodes = [
 
 connections = merge_conn(
     conn([
-        ("TelegramTrigger", "Normaliser (multicanal)"),
+        ("TelegramTrigger", "Filtre Telegram (mention)"),
+        ("Filtre Telegram (mention)", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
@@ -431,7 +565,9 @@ connections = merge_conn(
         ("Agent Claude (triage)", "Parser + garde-fous"),
         ("Parser + garde-fous", "Est-ce un ticket ?"),
         ("Est-ce un ticket ?", "PG: creer le ticket", 0),   # sortie 0 = vrai
-        ("Est-ce un ticket ?", "Ignore (pas un ticket)", 1),  # sortie 1 = faux
+        ("Est-ce un ticket ?", "Preparer reponse (non-ticket)", 1),  # sortie 1 = faux
+        ("Preparer reponse (non-ticket)", "Est Telegram ? (non-ticket)"),
+        ("Est Telegram ? (non-ticket)", "Telegram: repondre (non-ticket)", 0),
         ("PG: creer le ticket", "Router par niveau"),
         ("Router par niveau", "N0 repondre", 0),
         ("Router par niveau", "N1 valider puis executer", 1),

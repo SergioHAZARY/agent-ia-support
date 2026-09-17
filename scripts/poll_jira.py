@@ -101,11 +101,22 @@ def get_pg_conn():
     )
 
 
+BATCH_SIZE = 200  # reconnexion toutes les N insertions (évite timeout Supabase)
+
+
 def insert_events(events):
-    conn = get_pg_conn()
-    conn.autocommit = True
     inserted = 0
-    for ev in events:
+    conn = None
+    for i, ev in enumerate(events):
+        # Reconnexion par batch pour éviter les timeouts réseau
+        if conn is None or i % BATCH_SIZE == 0:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            conn = get_pg_conn()
+            conn.autocommit = True
         try:
             result = conn.run(
                 "WITH ins AS ("
@@ -126,7 +137,17 @@ def insert_events(events):
                 print(f"  + {ev['source_message_id']:18s} {ev['body'][:70]}")
         except Exception as e:
             print(f"  ! {ev['source_message_id']}: {e}", file=sys.stderr)
-    conn.close()
+            # Forcer la reconnexion au prochain tour
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
     return inserted
 
 
