@@ -134,11 +134,21 @@ let ev;
 
 if (j.message || j.channel_post) {                 // Telegram
   const t = j.message || j.channel_post;
+  // Detecter les photos : extraire le file_id de la plus grande taille
+  let photoFileId = '';
+  if (t.photo && Array.isArray(t.photo) && t.photo.length > 0) {
+    photoFileId = t.photo[t.photo.length - 1].file_id || '';
+  } else if (t.document && (t.document.mime_type||'').startsWith('image/')) {
+    photoFileId = t.document.file_id || '';
+  }
+  const caption = t.caption || '';
+  const textBody = t.text || caption || (photoFileId ? '[image envoyee]' : '') || (t.document ? '[fichier]' : '') || (t.voice ? '[vocal]' : '') || (t.sticker ? '[sticker]' : '') || '';
   ev = { platform:'telegram', external_id:String((t.chat||{}).id||''),
     source_message_id:String(t.message_id||''),
     sender_external_id:String((t.from||{}).id||''),
     sender_raw:[(t.from||{}).first_name,(t.from||{}).last_name,(t.from||{}).username].filter(Boolean).join(' '),
-    message_body: t.text || t.caption || (t.photo ? '[photo]' : '') || (t.document ? '[fichier]' : '') || (t.voice ? '[vocal]' : '') || (t.sticker ? '[sticker]' : '') || '' };
+    message_body: textBody,
+    _photo_file_id: photoFileId };
 } else if (j.webhookEvent && j.issue) {              // Jira Trigger (webhook natif)
   const iss = j.issue || {};
   const f = iss.fields || {};
@@ -209,7 +219,11 @@ const ctx = {
 
 // La société résolue (si le canal est déclaré) est reportée sur l'événement
 // pour lier le ticket. Sinon null : l'agent trie et trace quand même (P1).
-const src = Object.assign({}, $('Normaliser (multicanal)').item.json,
+// Si la vision a fusionne du texte, on le prend ; sinon, le message brut.
+let baseEvent;
+try { baseEvent = $('Fusionner texte image').item.json; } catch(e) { baseEvent = null; }
+if (!baseEvent) baseEvent = $('Normaliser (multicanal)').item.json;
+const src = Object.assign({}, baseEvent,
   { tenant_id: (pg && pg.tenant_id) || null });
 
 const userContent =
@@ -276,7 +290,8 @@ return [{ json: { count: rows.length, tickets: rows } }];
 PREPARE_REPLY_TICKET_JS = r"""
 // Prepare la reponse pour un TICKET (is_ticket = true).
 // NEURONTRIAGE v1 : Branche A (resolved) ou Branche B (escalated).
-const src = $('Normaliser (multicanal)').item.json;
+let src;
+try { src = $('Fusionner texte image').item.json; } catch(e) { src = $('Normaliser (multicanal)').item.json; }
 const parsed = $('Parser + garde-fous').item.json;
 const platform = src.platform || '';
 const level = parsed.autonomy_level || 'N3';
@@ -327,7 +342,8 @@ return [{ json: { platform, chat_id, reply_text: reply, resolution_status: statu
 PREPARE_REPLY_NONTICKET_JS = r"""
 // Prepare la reponse pour un NON-TICKET (salutations, remerciements, etc.)
 // L'agent repond naturellement sans creer de ticket.
-const src = $('Normaliser (multicanal)').item.json;
+let src;
+try { src = $('Fusionner texte image').item.json; } catch(e) { src = $('Normaliser (multicanal)').item.json; }
 const parsed = $('Parser + garde-fous').item.json;
 const platform = src.platform || '';
 
@@ -350,6 +366,54 @@ if (platform === 'telegram') {
 }
 
 return [{ json: { platform, chat_id, reply_text: reply, resolution_status: 'not_a_ticket', ticket_ref: '' } }];
+""".strip()
+
+VISION_PREPARE_JS = r"""
+// Construit la requete OpenRouter Vision avec l'URL de l'image Telegram.
+// Recoit la reponse de TG: getFile qui contient result.file_path.
+// On passe l'URL directe a Claude Vision (pas de telechargement binaire).
+const src = $('Normaliser (multicanal)').item.json;
+const caption = src.message_body || '';
+const filePath = ($json.result || {}).file_path || '';
+
+// Construire l'URL de telechargement Telegram (publique, valable ~1h)
+const botToken = $vars.TELEGRAM_BOT_TOKEN || '';
+const imageUrl = (filePath && botToken)
+  ? 'https://api.telegram.org/file/bot' + botToken + '/' + filePath
+  : '';
+
+const userContent = [];
+if (imageUrl) {
+  userContent.push({ type: 'image_url', image_url: { url: imageUrl } });
+}
+const prompt = caption && caption !== '[image envoyee]'
+  ? "L'utilisateur a envoye cette image avec le message : \"" + caption + "\". Decris precisement ce que tu vois dans l'image (texte, erreurs, interfaces). Si c'est une capture d'ecran d'une erreur informatique, identifie le probleme."
+  : "L'utilisateur a envoye cette image pour signaler un probleme informatique. Decris precisement ce que tu vois : texte visible, messages d'erreur, interfaces, et identifie le probleme.";
+userContent.push({ type: 'text', text: prompt });
+
+return [{ json: {
+  model: 'anthropic/claude-sonnet-4',
+  max_tokens: 1000,
+  messages: [{ role: 'user', content: userContent }]
+}}];
+""".strip()
+
+VISION_MERGE_JS = r"""
+// Fusionne le resultat de la vision avec le message original.
+// Le texte extrait de l'image remplace/complete le message_body.
+const src = Object.assign({}, $('Normaliser (multicanal)').item.json);
+const visionResponse = $json.choices && $json.choices[0] && $json.choices[0].message
+  ? $json.choices[0].message.content : '';
+
+if (visionResponse) {
+  const caption = src.message_body || '';
+  const combined = caption && caption !== '[image envoyee]'
+    ? caption + '\n\n[Description de l\'image jointe] ' + visionResponse
+    : '[Contenu de l\'image envoyee] ' + visionResponse;
+  src.message_body = combined.slice(0, 2000);
+}
+
+return [{ json: src }];
 """.strip()
 
 JIRA_DEDUP_JS = r"""
@@ -458,7 +522,40 @@ nodes = [
     # --- Pipeline principal ---
     node("Normaliser (multicanal)", "n8n-nodes-base.code", 2, [280, 240],
          {"jsCode": NORMALIZE_JS}),
-    pg_node("PG: enregistrer evenement", [440, 240], PG_EVENT_SQL,
+
+    # --- Vision : traitement des images ---
+    node("A une image ?", "n8n-nodes-base.if", 2.3, [460, 240], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "img1",
+                                       "leftValue": "={{ $json._photo_file_id }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "string", "operation": "notEquals"}}]},
+        "options": {}}),
+    # Branche image : telecharger via Telegram API
+    node("TG: getFile", "n8n-nodes-base.httpRequest", 4.2, [640, 120], {
+        "method": "GET",
+        "url": '=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/getFile?file_id={{ $json._photo_file_id }}',
+        "options": {"response": {"response": {"responseFormat": "json"}}}}),
+    node("Preparer vision", "n8n-nodes-base.code", 2, [860, 120],
+         {"jsCode": VISION_PREPARE_JS}),
+    node("OpenRouter: vision", "n8n-nodes-base.httpRequest", 4.2, [1080, 120], {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": True,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {"response": {"response": {"responseFormat": "json"}}},
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [
+            {"name": "Content-Type", "value": "application/json"}]}},
+        creds=({"openRouterApi": CREDS["openRouterApi"]} if "openRouterApi" in CREDS else None)),
+    node("Fusionner texte image", "n8n-nodes-base.code", 2, [1300, 120],
+         {"jsCode": VISION_MERGE_JS}),
+
+    pg_node("PG: enregistrer evenement", [640, 380], PG_EVENT_SQL,
             "={{ [$json.source_message_id, $json.sender_raw, $json.message_body, "
             "$json.platform, $json.external_id] }}"),
     pg_node("PG: resoudre societe", [660, 240], PG_CTX_SQL,
@@ -558,7 +655,15 @@ connections = merge_conn(
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
-        ("Normaliser (multicanal)", "PG: enregistrer evenement"),
+        # Vision branch : Normaliser -> "A une image ?" -> (oui) pipeline vision -> PG
+        #                                                 -> (non) PG directement
+        ("Normaliser (multicanal)", "A une image ?"),
+        ("A une image ?", "TG: getFile", 0),                    # sortie 0 = oui (image)
+        ("A une image ?", "PG: enregistrer evenement", 1),      # sortie 1 = non (pas d'image)
+        ("TG: getFile", "Preparer vision"),
+        ("Preparer vision", "OpenRouter: vision"),
+        ("OpenRouter: vision", "Fusionner texte image"),
+        ("Fusionner texte image", "PG: enregistrer evenement"),
         ("PG: enregistrer evenement", "PG: resoudre societe"),
         ("PG: resoudre societe", "Assembler le contexte"),
         ("Assembler le contexte", "Agent Claude (triage)"),

@@ -1,52 +1,44 @@
 # -*- coding: utf-8 -*-
 """
-Polling Outlook shared mailbox → Supabase (table events).
+Polling Microsoft 365 Outlook (IMAP) -> Supabase (table events).
 
-Lit les emails de la boîte partagée Support-IT@francoisesaget.com
-via Microsoft Graph API + device code flow (OAuth2).
+Recupere les emails via IMAP sur outlook.office365.com.
+Supporte OAuth2 XOAUTH2 (via Microsoft Graph API) quand Basic Auth
+est desactive (cas par defaut sur M365 depuis 2023).
 
-Stratégie d'authentification :
-  1. Essaie plusieurs client IDs publics Microsoft (certains tenants en
-     bloquent certains mais pas d'autres)
-  2. En fallback, utilise Outlook COM si Outlook est installé sur le poste
+Prerequis : pip install pg8000 msal
 
-Prérequis : pip install msal requests pg8000
-
-Au premier lancement, le script affiche un code et une URL.
-Ouvrir l'URL dans un navigateur, entrer le code, et se connecter
-avec SHAZARY_AA@atlasformen.com. Le token est ensuite mis en cache.
-
-Mode --init   : import de TOUS les emails existants
-Mode --loop N : poll continu toutes les N secondes (défaut 300)
-Mode par défaut : un seul poll incrémental (emails reçus < 10 min)
+Mode --init   : import de TOUS les emails (INBOX + Sent Items + autres)
+Mode --loop N : poll continu toutes les N secondes (defaut 300)
+Mode par defaut : un seul poll incremental (emails recus < 1 jour)
 
 Usage :
+  set OUTLOOK_EMAIL=itsupport@beautybay.com
+  set OUTLOOK_PASS=...
   set PG_PASS=...
   python scripts/poll_outlook.py --init
   python scripts/poll_outlook.py --loop 300
   python scripts/poll_outlook.py
 """
+import base64
+import email
+import email.header
+import email.utils
+import imaplib
 import json
 import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+import urllib.request
+import urllib.error
+from datetime import datetime, timedelta
 
 # --- Configuration ---
-OUTLOOK_EMAIL = os.environ.get("OUTLOOK_EMAIL", "SHAZARY_AA@atlasformen.com")
-SHARED_MAILBOX = os.environ.get("SHARED_MAILBOX", "Support-IT@francoisesaget.com")
-
-# Clients publics Microsoft à essayer dans l'ordre
-# Chaque tenant peut bloquer certains clients mais pas d'autres
-PUBLIC_CLIENTS = [
-    ("14d82eec-204b-4c2f-b7e8-296a70dab67e", "Microsoft Graph PowerShell"),
-    ("04b07795-8ddb-461a-bbdb-d681b202a308", "Azure CLI"),
-    ("1950a258-227b-4e31-a9cf-717495945fc2", "Azure PowerShell"),
-    ("d3590ed6-52b3-4102-aeff-aad2292ab01c", "Microsoft Office"),
-]
-AUTHORITY = "https://login.microsoftonline.com/organizations"
-SCOPES = ["Mail.Read.Shared", "Mail.Read", "User.Read"]
+OUTLOOK_EMAIL = os.environ.get("OUTLOOK_EMAIL", "itsupport@beautybay.com")
+OUTLOOK_PASS = os.environ.get("OUTLOOK_PASS", "")
+IMAP_SERVER = os.environ.get("IMAP_SERVER", "outlook.office365.com")
+IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
 
 PG_HOST = os.environ.get("PG_HOST", "aws-1-eu-west-1.pooler.supabase.com")
 PG_PORT = int(os.environ.get("PG_PORT", "6543"))
@@ -54,273 +46,8 @@ PG_DB = os.environ.get("PG_DB", "postgres")
 PG_USER = os.environ.get("PG_USER", "postgres.ztmzhvzjfsncwuvzbhua")
 PG_PASS = os.environ.get("PG_PASS", "")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-TOKEN_CACHE_FILE = os.path.join(HERE, ".outlook_token_cache.json")
-CLIENT_STATE_FILE = os.path.join(HERE, ".outlook_client_id.json")
-PAGE_SIZE = 100
-USE_COM = "--com" in sys.argv  # Forcer le mode Outlook COM
-
-
-def get_graph_token():
-    """Obtient un token Microsoft Graph via device code flow + cache.
-    Essaie plusieurs client IDs publics Microsoft."""
-    import msal
-
-    # Charger le client ID qui a fonctionné la dernière fois
-    saved_client = _load_saved_client()
-    if saved_client:
-        clients = [(saved_client["id"], saved_client["name"])] + \
-                  [(c, n) for c, n in PUBLIC_CLIENTS if c != saved_client["id"]]
-    else:
-        clients = PUBLIC_CLIENTS
-
-    for client_id, client_name in clients:
-        print(f"  Essai avec {client_name} ({client_id[:8]}...)...")
-
-        cache = msal.SerializableTokenCache()
-        cache_file = TOKEN_CACHE_FILE.replace(".json", f"_{client_id[:8]}.json")
-        if os.path.exists(cache_file):
-            cache.deserialize(open(cache_file).read())
-
-        app = msal.PublicClientApplication(
-            client_id, authority=AUTHORITY, token_cache=cache
-        )
-
-        # Essai silencieux (token en cache)
-        accounts = app.get_accounts(username=OUTLOOK_EMAIL)
-        if accounts:
-            result = app.acquire_token_silent(SCOPES, account=accounts[0])
-            if result and "access_token" in result:
-                print(f"  Token en cache valide ({client_name})")
-                _save_cache(cache, cache_file)
-                _save_client(client_id, client_name)
-                return result["access_token"]
-
-        # Device code flow
-        try:
-            flow = app.initiate_device_flow(scopes=SCOPES)
-            if "user_code" not in flow:
-                err = flow.get("error_description", str(flow))
-                print(f"  {client_name}: device flow échoué — {err[:120]}")
-                continue
-
-            print(f"\n  === Authentification via {client_name} ===")
-            print(f"\n  {flow['message']}\n")
-            print("  En attente de l'authentification dans le navigateur...")
-
-            result = app.acquire_token_by_device_flow(flow)
-            if "access_token" in result:
-                print(f"  Authentifié avec succès via {client_name} !")
-                _save_cache(cache, cache_file)
-                _save_client(client_id, client_name)
-                return result["access_token"]
-
-            err = result.get("error_description", result.get("error", ""))
-            print(f"  {client_name}: auth échouée — {err[:150]}")
-
-        except Exception as e:
-            print(f"  {client_name}: erreur — {e}")
-
-    print("\nERREUR: Aucun client public n'a fonctionné.", file=sys.stderr)
-    print("Alternatives :", file=sys.stderr)
-    print("  1. Demander à l'admin M365 d'autoriser une app", file=sys.stderr)
-    print("  2. Utiliser le mode Outlook COM : python scripts/poll_outlook.py --com", file=sys.stderr)
-    sys.exit(1)
-
-
-def _save_cache(cache, cache_file):
-    if cache.has_state_changed:
-        with open(cache_file, "w") as f:
-            f.write(cache.serialize())
-
-
-def _load_saved_client():
-    if os.path.exists(CLIENT_STATE_FILE):
-        try:
-            return json.load(open(CLIENT_STATE_FILE))
-        except Exception:
-            pass
-    return None
-
-
-def _save_client(client_id, client_name):
-    with open(CLIENT_STATE_FILE, "w") as f:
-        json.dump({"id": client_id, "name": client_name}, f)
-
-
-def graph_get(token, url, params=None):
-    """Appel GET à l'API Microsoft Graph."""
-    import requests
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    resp = requests.get(url, headers=headers, params=params, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def fetch_emails_graph(token, since=None):
-    """Récupère les emails de la boîte partagée via Graph API."""
-    base_url = f"https://graph.microsoft.com/v1.0/users/{SHARED_MAILBOX}/mailFolders/inbox/messages"
-
-    params = {
-        "$select": "id,subject,from,receivedDateTime,body,internetMessageId",
-        "$orderby": "receivedDateTime asc",
-        "$top": PAGE_SIZE,
-    }
-    if since:
-        params["$filter"] = f"receivedDateTime ge {since}"
-        params["$orderby"] = "receivedDateTime desc"
-
-    all_messages = []
-    url = base_url
-    page = 0
-
-    while url:
-        try:
-            data = graph_get(token, url, params if page == 0 else None)
-        except Exception as e:
-            err_msg = str(e)
-            if "403" in err_msg or "Forbidden" in err_msg:
-                print(f"  Accès refusé à {SHARED_MAILBOX}, essai via /me...")
-                return _fetch_emails_me(token, since)
-            raise
-
-        messages = data.get("value", [])
-        all_messages.extend(messages)
-        page += 1
-        print(f"  ... {len(all_messages)} emails chargés (page {page})")
-        url = data.get("@odata.nextLink")
-
-    return all_messages
-
-
-def _fetch_emails_me(token, since=None):
-    """Fallback : lit les mails du compte propre."""
-    print(f"  Lecture de la boîte de {OUTLOOK_EMAIL}...")
-    base_url = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
-    params = {
-        "$select": "id,subject,from,receivedDateTime,body,internetMessageId",
-        "$orderby": "receivedDateTime asc",
-        "$top": PAGE_SIZE,
-    }
-    if since:
-        params["$filter"] = f"receivedDateTime ge {since}"
-        params["$orderby"] = "receivedDateTime desc"
-
-    all_messages = []
-    url = base_url
-    page = 0
-    while url:
-        data = graph_get(token, url, params if page == 0 else None)
-        messages = data.get("value", [])
-        all_messages.extend(messages)
-        page += 1
-        print(f"  ... {len(all_messages)} emails chargés (page {page})")
-        url = data.get("@odata.nextLink")
-    return all_messages
-
-
-# ============================================================
-# Mode Outlook COM — fallback Windows quand Graph est bloqué
-# ============================================================
-
-def fetch_emails_com(since=None):
-    """Lit les emails via Outlook COM (Windows + Outlook installé)."""
-    import win32com.client
-
-    outlook = win32com.client.Dispatch("Outlook.Application")
-    mapi = outlook.GetNamespace("MAPI")
-
-    # Chercher la boîte partagée dans les stores
-    shared_store = None
-    for store in mapi.Stores:
-        if SHARED_MAILBOX.lower() in store.DisplayName.lower():
-            shared_store = store
-            break
-
-    if shared_store:
-        inbox = shared_store.GetDefaultFolder(6)  # 6 = olFolderInbox
-        print(f"  Boîte partagée trouvée: {shared_store.DisplayName}")
-    else:
-        # Essayer via les destinataires
-        try:
-            recip = mapi.CreateRecipient(SHARED_MAILBOX)
-            recip.Resolve()
-            if recip.Resolved:
-                inbox = mapi.GetSharedDefaultFolder(recip, 6)
-                print(f"  Accès via GetSharedDefaultFolder: {SHARED_MAILBOX}")
-            else:
-                print(f"  Boîte partagée non trouvée, utilisation de la boîte par défaut")
-                inbox = mapi.GetDefaultFolder(6)
-        except Exception as e:
-            print(f"  Erreur accès partagé: {e}")
-            inbox = mapi.GetDefaultFolder(6)
-
-    items = inbox.Items
-    items.Sort("[ReceivedTime]", False)  # Plus ancien d'abord
-
-    if since:
-        since_str = since.strftime("%m/%d/%Y %H:%M")
-        items = items.Restrict(f"[ReceivedTime] >= '{since_str}'")
-
-    messages = []
-    count = 0
-    for item in items:
-        try:
-            msg = {
-                "id": getattr(item, "EntryID", ""),
-                "subject": getattr(item, "Subject", "(sans objet)"),
-                "from": {"emailAddress": {
-                    "name": getattr(item, "SenderName", ""),
-                    "address": getattr(item, "SenderEmailAddress", ""),
-                }},
-                "receivedDateTime": str(getattr(item, "ReceivedTime", "")),
-                "body": {"content": getattr(item, "Body", ""), "contentType": "text"},
-                "internetMessageId": getattr(item, "InternetMessageID",
-                                             getattr(item, "EntryID", "")),
-            }
-            messages.append(msg)
-            count += 1
-            if count % 100 == 0:
-                print(f"  ... {count} emails lus")
-        except Exception as e:
-            print(f"  ! Erreur lecture COM: {e}", file=sys.stderr)
-
-    print(f"  {len(messages)} emails lus via Outlook COM")
-    return messages
-
-
-# ============================================================
-# Normalisation et insertion
-# ============================================================
-
-def normalize_email(msg):
-    """Normalise un message (Graph ou COM) en event Supabase."""
-    sender = ""
-    from_field = msg.get("from", {}).get("emailAddress", {})
-    sender = from_field.get("name") or from_field.get("address", "")
-
-    subject = msg.get("subject", "(sans objet)")
-
-    body_obj = msg.get("body", {})
-    body_text = body_obj.get("content", "")
-    if body_obj.get("contentType") == "html":
-        body_text = re.sub(r"<[^>]+>", " ", body_text)
-        body_text = re.sub(r"&nbsp;", " ", body_text)
-    body_text = re.sub(r"\s+", " ", body_text).strip()
-
-    body = f"[Email] {subject}"
-    if body_text:
-        body += f" — {body_text}"
-
-    msg_id = msg.get("internetMessageId") or msg.get("id", "")
-
-    return {
-        "platform": "email",
-        "external_id": SHARED_MAILBOX.lower(),
-        "source_message_id": msg_id[:255],
-        "sender_raw": sender[:255],
-        "body": body[:2000],
-    }
+DEPARTMENT = os.environ.get("DEPARTMENT", "beautybay")
+BATCH_SIZE = 200
 
 
 def get_pg_conn():
@@ -331,11 +58,251 @@ def get_pg_conn():
     )
 
 
+def decode_header_value(raw):
+    """Decode un en-tete MIME (RFC 2047)."""
+    if not raw:
+        return ""
+    parts = email.header.decode_header(raw)
+    decoded = []
+    for data, charset in parts:
+        if isinstance(data, bytes):
+            decoded.append(data.decode(charset or "utf-8", errors="replace"))
+        else:
+            decoded.append(data)
+    return " ".join(decoded)
+
+
+def extract_body(msg):
+    """Extrait le texte brut du message."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if ct == "text/plain":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    return payload.decode(charset, errors="replace")
+        # Fallback : HTML
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if ct == "text/html":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    text = payload.decode(charset, errors="replace")
+                    text = re.sub(r"<[^>]+>", " ", text)
+                    text = re.sub(r"\s+", " ", text).strip()
+                    return text
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            charset = msg.get_content_charset() or "utf-8"
+            return payload.decode(charset, errors="replace")
+    return ""
+
+
+def fetch_emails_imap(imap, folder="INBOX", search_criteria="ALL", max_emails=0):
+    """Recupere les emails depuis un dossier IMAP."""
+    emails = []
+    try:
+        # Microsoft 365 : les noms de dossiers avec espaces doivent etre entre guillemets
+        quoted_folder = f'"{folder}"' if " " in folder else folder
+        status, _ = imap.select(quoted_folder, readonly=True)
+        if status != "OK":
+            print(f"  ! Cannot open folder: {folder}", file=sys.stderr)
+            return emails
+    except Exception as e:
+        print(f"  ! Error selecting folder {folder}: {e}", file=sys.stderr)
+        return emails
+
+    status, data = imap.search(None, search_criteria)
+    if status != "OK":
+        return emails
+
+    msg_ids = data[0].split()
+    if not msg_ids:
+        return emails
+
+    print(f"  {folder}: {len(msg_ids)} messages found")
+    if max_emails > 0:
+        msg_ids = msg_ids[-max_emails:]
+
+    for i, mid in enumerate(msg_ids):
+        try:
+            status, msg_data = imap.fetch(mid, "(RFC822)")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw = msg_data[0][1]
+            msg = email.message_from_bytes(raw)
+
+            subject = decode_header_value(msg.get("Subject", ""))
+            from_addr = decode_header_value(msg.get("From", ""))
+            message_id = msg.get("Message-ID", f"outlook-{folder}-{mid.decode()}")
+            date_str = msg.get("Date", "")
+
+            body = extract_body(msg)
+            if not body:
+                body = subject
+
+            # Nettoyer le message_id
+            message_id = message_id.strip().strip("<>")
+            if not message_id:
+                message_id = f"outlook-{folder}-{mid.decode()}"
+
+            emails.append({
+                "platform": "email",
+                "external_id": OUTLOOK_EMAIL.lower(),
+                "source_message_id": message_id[:500],
+                "sender_raw": from_addr[:500],
+                "body": f"[{subject}] {body}"[:2000],
+            })
+
+            if (i + 1) % 100 == 0:
+                print(f"  ... {i + 1}/{len(msg_ids)} messages read")
+        except Exception as e:
+            print(f"  ! Message {mid}: {e}", file=sys.stderr)
+
+    return emails
+
+
+def list_folders(imap):
+    """Liste tous les dossiers IMAP disponibles."""
+    status, folders = imap.list()
+    if status != "OK":
+        return []
+    result = []
+    for f in folders:
+        # Format: (\\flags) "delimiter" "name"
+        decoded = f.decode() if isinstance(f, bytes) else f
+        match = re.search(r'"([^"]+)"$|(\S+)$', decoded)
+        if match:
+            name = match.group(1) or match.group(2)
+            result.append(name)
+    return result
+
+
+def _get_oauth2_token():
+    """Obtient un token OAuth2 via ROPC (username/password) pour IMAP."""
+    # Client IDs connus pour ROPC IMAP :
+    # - Azure CLI public client (pre-authorized pour la plupart des tenants)
+    client_ids = [
+        ("Azure CLI", "04b07795-8ddb-461a-bbee-02f9e1bf7b46"),
+        ("Microsoft Office", "d3590ed6-52b1-4102-aeff-aad2292ab01c"),
+        ("PowerShell", "1b730954-1685-4b74-9bfd-dac224a7b894"),
+    ]
+    # Scope IMAP pour M365
+    scope = "https://outlook.office365.com/.default"
+
+    for name, client_id in client_ids:
+        url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+        body = (
+            f"grant_type=password"
+            f"&client_id={client_id}"
+            f"&username={urllib.request.quote(OUTLOOK_EMAIL)}"
+            f"&password={urllib.request.quote(OUTLOOK_PASS)}"
+            f"&scope={urllib.request.quote(scope)}"
+        )
+        req = urllib.request.Request(url, data=body.encode(), method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                result = json.loads(r.read().decode())
+                if "access_token" in result:
+                    print(f"  OAuth2 token acquired via {name}")
+                    return result["access_token"]
+        except urllib.error.HTTPError:
+            continue
+    return None
+
+
+def _xoauth2_string(user, token):
+    """Construit la chaine XOAUTH2 pour IMAP AUTHENTICATE."""
+    auth_str = f"user={user}\x01auth=Bearer {token}\x01\x01"
+    return base64.b64encode(auth_str.encode()).decode()
+
+
+def connect_imap():
+    """Connexion IMAP avec SSL. Essaie Basic Auth puis OAuth2 XOAUTH2."""
+    print(f"  Connecting to IMAP {IMAP_SERVER}:{IMAP_PORT} as {OUTLOOK_EMAIL}...")
+    imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+
+    # Tentative 1 : Basic Auth (fonctionne si active ou App Password)
+    try:
+        imap.login(OUTLOOK_EMAIL, OUTLOOK_PASS)
+        print("  Connected (Basic Auth).")
+        return imap
+    except imaplib.IMAP4.error as e:
+        err_msg = str(e)
+        if "basic" not in err_msg.lower() and "disabled" not in err_msg.lower():
+            # Erreur non liee a Basic Auth (mauvais mot de passe, etc.)
+            print(f"  ! IMAP login failed: {err_msg}", file=sys.stderr)
+            raise
+        print(f"  Basic Auth disabled, trying OAuth2 XOAUTH2...")
+
+    # Tentative 2 : OAuth2 ROPC -> XOAUTH2
+    token = _get_oauth2_token()
+    if not token:
+        print("  ! OAuth2 ROPC failed for all known client IDs.", file=sys.stderr)
+        print("  Fallback: trying MSAL library...", file=sys.stderr)
+        # Tentative 3 : MSAL library si installee
+        try:
+            import msal
+            for name, client_id in [
+                ("Azure CLI", "04b07795-8ddb-461a-bbee-02f9e1bf7b46"),
+                ("PowerShell", "1b730954-1685-4b74-9bfd-dac224a7b894"),
+            ]:
+                app = msal.PublicClientApplication(
+                    client_id,
+                    authority="https://login.microsoftonline.com/organizations"
+                )
+                result = app.acquire_token_by_username_password(
+                    OUTLOOK_EMAIL, OUTLOOK_PASS,
+                    scopes=["https://outlook.office365.com/IMAP.AccessAsUser.All"]
+                )
+                if "access_token" in result:
+                    token = result["access_token"]
+                    print(f"  OAuth2 token acquired via MSAL ({name})")
+                    break
+        except ImportError:
+            pass
+
+    if not token:
+        print("  ! Could not obtain OAuth2 token.", file=sys.stderr)
+        print("  Solutions:", file=sys.stderr)
+        print("  1. Use App Password: https://mysignins.microsoft.com/security-info", file=sys.stderr)
+        print("  2. Create Azure AD App with Mail.Read permission", file=sys.stderr)
+        print("  3. Set AZURE_CLIENT_ID + AZURE_CLIENT_SECRET env vars", file=sys.stderr)
+        sys.exit(1)
+
+    # Connexion IMAP avec XOAUTH2
+    imap2 = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+    auth_string = _xoauth2_string(OUTLOOK_EMAIL, token)
+    try:
+        imap2.authenticate("XOAUTH2", lambda x: auth_string.encode())
+        print("  Connected (OAuth2 XOAUTH2).")
+        return imap2
+    except imaplib.IMAP4.error as e:
+        print(f"  ! XOAUTH2 auth failed: {e}", file=sys.stderr)
+        print("  The tenant may require admin consent for IMAP access.", file=sys.stderr)
+        print("  Solutions:", file=sys.stderr)
+        print("  1. Use App Password: https://mysignins.microsoft.com/security-info", file=sys.stderr)
+        print("  2. Admin must enable IMAP in Exchange Online", file=sys.stderr)
+        sys.exit(1)
+
+
 def insert_events(events):
-    conn = get_pg_conn()
-    conn.autocommit = True
+    """Insere les events dans Supabase avec reconnexion par batch."""
     inserted = 0
-    for ev in events:
+    conn = None
+    for i, ev in enumerate(events):
+        if conn is None or i % BATCH_SIZE == 0:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            conn = get_pg_conn()
+            conn.autocommit = True
         try:
             result = conn.run(
                 "WITH ins AS ("
@@ -353,99 +320,121 @@ def insert_events(events):
             )
             if result and result[0][0] is not None:
                 inserted += 1
-                print(f"  + {ev['sender_raw'][:20]:20s} {ev['body'][:70]}")
+                print(f"  + {ev['source_message_id'][:40]:40s} {ev['body'][:60]}")
         except Exception as e:
-            print(f"  ! {ev['source_message_id'][:30]}: {e}", file=sys.stderr)
-    conn.close()
+            print(f"  ! {ev['source_message_id'][:40]}: {e}", file=sys.stderr)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
     return inserted
 
 
-def poll_init(fetch_fn):
-    """Import initial : TOUS les emails."""
-    print(f"[{time.strftime('%H:%M:%S')}] === IMPORT INITIAL Outlook ({SHARED_MAILBOX}) ===")
-    messages = fetch_fn()
-    print(f"  Total: {len(messages)} emails récupérés")
-    events = [normalize_email(m) for m in messages]
-    total_inserted = 0
-    for i in range(0, len(events), PAGE_SIZE):
-        batch = events[i:i + PAGE_SIZE]
-        inserted = insert_events(batch)
-        total_inserted += inserted
-    print(f"  === {total_inserted} nouveaux events insérés (sur {len(events)} emails) ===")
-    return total_inserted
+def poll_init():
+    """Import initial : TOUS les emails de tous les dossiers pertinents."""
+    print(f"[{time.strftime('%H:%M:%S')}] === INITIAL IMPORT Outlook ({OUTLOOK_EMAIL}) ===")
+    imap = connect_imap()
+
+    # Lister les dossiers disponibles
+    folders = list_folders(imap)
+    print(f"  Available folders: {folders}")
+
+    # Microsoft 365 nomme ses dossiers differemment de Gmail :
+    #   "Sent Items"    (pas "Sent Mail")
+    #   "Deleted Items" (pas "Trash")
+    #   "Junk Email"    (pas "Spam")
+    # On scanne INBOX + Sent Items + tout dossier dont le nom evoque la reception.
+    target_folders = []
+    for f in folders:
+        fl = f.lower()
+        if any(k in fl for k in ["inbox", "sent items", "sent", "envoy"]):
+            target_folders.append(f)
+
+    # Toujours inclure INBOX en premier
+    if "INBOX" not in target_folders:
+        target_folders.insert(0, "INBOX")
+
+    # Deduplication en preservant l'ordre
+    seen = set()
+    deduped = []
+    for f in target_folders:
+        if f not in seen:
+            seen.add(f)
+            deduped.append(f)
+    target_folders = deduped
+
+    print(f"  Folders to scan: {target_folders}")
+
+    all_events = []
+    for folder in target_folders:
+        print(f"\n  --- Folder: {folder} ---")
+        emails = fetch_emails_imap(imap, folder=folder, search_criteria="ALL")
+        all_events.extend(emails)
+
+    imap.logout()
+
+    print(f"\n  Total: {len(all_events)} messages retrieved")
+    if all_events:
+        inserted = insert_events(all_events)
+        print(f"  === {inserted} new events inserted (out of {len(all_events)} messages) ===")
+    return len(all_events)
 
 
-def poll_incremental(fetch_fn):
-    """Poll incrémental : emails reçus dans les 10 dernières minutes."""
-    print(f"[{time.strftime('%H:%M:%S')}] Polling Outlook ({SHARED_MAILBOX})...")
-    since = datetime.now(timezone.utc) - timedelta(minutes=10)
+def poll_incremental():
+    """Poll incremental : emails recus depuis 1 jour."""
+    print(f"[{time.strftime('%H:%M:%S')}] Polling Outlook ({OUTLOOK_EMAIL})...")
+    imap = connect_imap()
 
-    try:
-        messages = fetch_fn(since=since)
-    except Exception as e:
-        print(f"  Erreur: {e}", file=sys.stderr)
+    since = (datetime.now() - timedelta(days=1)).strftime("%d-%b-%Y")
+    search = f'(SINCE {since})'
+
+    all_events = []
+    for folder in ["INBOX"]:
+        emails = fetch_emails_imap(imap, folder=folder, search_criteria=search)
+        all_events.extend(emails)
+
+    imap.logout()
+
+    if not all_events:
+        print("  No new messages")
         return 0
 
-    if not messages:
-        print("  Aucun nouvel email")
-        return 0
-
-    events = [normalize_email(m) for m in messages]
-    inserted = insert_events(events)
-    print(f"  {inserted} nouveaux events insérés (sur {len(events)} emails)")
+    inserted = insert_events(all_events)
+    print(f"  {inserted} new events inserted")
     return inserted
 
 
 def main():
+    if not OUTLOOK_PASS:
+        print("OUTLOOK_PASS missing. set OUTLOOK_PASS=...", file=sys.stderr)
+        sys.exit(1)
     if not PG_PASS:
-        print("PG_PASS manquant. set PG_PASS=...", file=sys.stderr)
+        print("PG_PASS missing. set PG_PASS=...", file=sys.stderr)
         sys.exit(1)
 
-    # Choisir le mode de connexion
-    if USE_COM:
-        print("Mode Outlook COM (lecture directe via Outlook installé)")
-        try:
-            import win32com.client  # noqa
-        except ImportError:
-            print("ERREUR: pip install pywin32", file=sys.stderr)
-            sys.exit(1)
-
-        def fetch_fn(since=None):
-            return fetch_emails_com(since=since)
-    else:
-        print("Mode Microsoft Graph (OAuth device code flow)")
-        for lib in ("msal", "requests", "pg8000"):
-            try:
-                __import__(lib)
-            except ImportError:
-                print(f"ERREUR: pip install {lib}", file=sys.stderr)
-                sys.exit(1)
-
-        print(f"Authentification pour {SHARED_MAILBOX}...")
-        token = get_graph_token()
-
-        def fetch_fn(since=None):
-            since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ") if since else None
-            return fetch_emails_graph(token, since=since_str)
+    try:
+        import pg8000  # noqa
+    except ImportError:
+        print("ERROR: pip install pg8000", file=sys.stderr)
+        sys.exit(1)
 
     if "--init" in sys.argv:
-        poll_init(fetch_fn)
+        poll_init()
     elif "--loop" in sys.argv:
         idx = sys.argv.index("--loop")
         interval = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 else 300
-        print(f"Mode boucle : poll toutes les {interval}s. Ctrl+C pour arrêter.")
+        print(f"Loop mode: polling every {interval}s. Ctrl+C to stop.")
         while True:
-            if not USE_COM:
-                t = get_graph_token()
-                def _fetch(since=None, _t=t):
-                    s = since.strftime("%Y-%m-%dT%H:%M:%SZ") if since else None
-                    return fetch_emails_graph(_t, since=s)
-                poll_incremental(_fetch)
-            else:
-                poll_incremental(fetch_fn)
+            poll_incremental()
             time.sleep(interval)
     else:
-        poll_incremental(fetch_fn)
+        poll_incremental()
 
 
 if __name__ == "__main__":

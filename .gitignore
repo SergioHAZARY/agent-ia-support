@@ -23,6 +23,12 @@ backups/*
 
 # Token cache Microsoft Graph (OAuth device code flow)
 scripts/.outlook_token_cache.json
+scripts/.tokens/
+
+# Images locales
+*.jpg
+*.jpeg
+*.png
 
 # --- Généré / local ----------------------------------------------------------
 # Export DOCX du document — régénéré depuis le HTML
