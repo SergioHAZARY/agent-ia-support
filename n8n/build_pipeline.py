@@ -1301,14 +1301,15 @@ nodes = [
     # --- Branche Bot Admin (@itmg_admin_bot) ---
     sticky("noteAdmin",
            "## Bot Admin (@itmg_admin_bot)\n"
-           "Webhook /admin-bot recoit les messages du bot admin.\n"
-           "Commandes : /tickets, /stats, /recents, tickets par canal/priorite/departement.\n"
+           "TelegramTrigger dedie au bot admin.\n"
+           "Commandes : /tickets, /stats, /recents, /rapport, tickets par canal/priorite/departement.\n"
            "Reponses groupees par categorie, canal, priorite ou societe.\n"
-           "Token dans la variable n8n TELEGRAM_ADMIN_BOT_TOKEN.",
+           "Credential : Telegram Admin Bot (telegramAdminApi).",
            [-60, 940], w=520, h=140),
-    node("Webhook Admin Bot", "n8n-nodes-base.webhook", 1.1, [220, 1020], {
-        "httpMethod": "POST", "path": "admin-bot",
-        "responseMode": "onReceived", "options": {}}),
+    node("TelegramTrigger Admin", "n8n-nodes-base.telegramTrigger", 1.2, [220, 1020], {
+        "updates": ["message"],
+        "additionalFields": {}},
+        creds=({"telegramApi": CREDS["telegramAdminApi"]} if "telegramAdminApi" in CREDS else None)),
     node("Parser admin", "n8n-nodes-base.code", 2, [400, 1020],
          {"jsCode": ADMIN_PARSE_JS}),
     pg_node("PG: admin tickets", [600, 1020], PG_ADMIN_TICKETS_SQL, ""),
@@ -1403,7 +1404,7 @@ connections = merge_conn(
         ("Webhook reporting", "PG: tickets en cours"),
         ("PG: tickets en cours", "Formater le rapport"),
         # --- Bot Admin (@itmg_admin_bot) ---
-        ("Webhook Admin Bot", "Parser admin"),
+        ("TelegramTrigger Admin", "Parser admin"),
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
         ("Formater admin", "HTTP: reponse admin"),

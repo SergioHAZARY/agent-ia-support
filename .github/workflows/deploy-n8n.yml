@@ -12,7 +12,8 @@ name: Deploy n8n
 # les webhooks Telegram). Les variables n8n sont créées si absentes.
 #
 # Secrets optionnels supplémentaires :
-#   CLICKUP_API_TOKEN  (crée la variable n8n pour l'escalade N3)
+#   CLICKUP_API_TOKEN          (crée la variable n8n pour l'escalade N3)
+#   TELEGRAM_ADMIN_BOT_TOKEN   (crée la credential Telegram du bot admin)
 
 on:
   push:
@@ -33,10 +34,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Reconstruire le workflow depuis la source
-        run: python n8n/build_pipeline.py
-
-      - name: Déployer vers n8n (variables + workflow + activation)
+      - name: Déployer vers n8n (credentials + variables + build + workflow + activation)
         env:
           N8N_BASE_URL: ${{ secrets.N8N_BASE_URL }}
           N8N_API_KEY: ${{ secrets.N8N_API_KEY }}

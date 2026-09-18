@@ -1170,24 +1170,24 @@
         940
       ],
       "parameters": {
-        "content": "## Bot Admin (@itmg_admin_bot)\nWebhook /admin-bot recoit les messages du bot admin.\nCommandes : /tickets, /stats, /recents, tickets par canal/priorite/departement.\nReponses groupees par categorie, canal, priorite ou societe.\nToken dans la variable n8n TELEGRAM_ADMIN_BOT_TOKEN.",
+        "content": "## Bot Admin (@itmg_admin_bot)\nTelegramTrigger dedie au bot admin.\nCommandes : /tickets, /stats, /recents, /rapport, tickets par canal/priorite/departement.\nReponses groupees par categorie, canal, priorite ou societe.\nCredential : Telegram Admin Bot (telegramAdminApi).",
         "height": 140,
         "width": 520
       }
     },
     {
-      "name": "Webhook Admin Bot",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
+      "name": "TelegramTrigger Admin",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
       "position": [
         220,
         1020
       ],
       "parameters": {
-        "httpMethod": "POST",
-        "path": "admin-bot",
-        "responseMode": "onReceived",
-        "options": {}
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
       }
     },
     {
@@ -1881,7 +1881,7 @@
         ]
       ]
     },
-    "Webhook Admin Bot": {
+    "TelegramTrigger Admin": {
       "main": [
         [
           {

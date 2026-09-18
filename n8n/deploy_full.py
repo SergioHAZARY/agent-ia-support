@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Deploiement complet : variables n8n + workflow + activation + toggle webhook.
+Deploiement complet : credentials + variables + build + workflow + activation.
 
 Usage :
   python n8n/deploy_full.py
@@ -8,9 +8,11 @@ Usage :
 Prerequis (variables d'environnement) :
   N8N_BASE_URL, N8N_API_KEY  (comme sync.py)
   CLICKUP_API_TOKEN           (optionnel, pour creer la variable n8n)
+  TELEGRAM_ADMIN_BOT_TOKEN    (optionnel, pour creer la credential admin)
 """
 import json
 import os
+import subprocess
 import sys
 import urllib.parse
 import urllib.request
@@ -127,12 +129,11 @@ def toggle_workflow(wf_id):
         print("  ATTENTION : activer manuellement dans l'editeur n8n")
 
 
-def register_admin_webhook():
-    """Enregistre le webhook Telegram pour le bot admin @itmg_admin_bot."""
-    print("\n=== Webhook bot admin ===")
+def ensure_admin_credential():
+    """Cree la credential Telegram pour le bot admin si absente."""
+    print("\n=== Credential bot admin ===")
     token = os.environ.get("TELEGRAM_ADMIN_BOT_TOKEN", "")
     if not token:
-        # Essayer de recuperer depuis les variables n8n existantes
         st, body = call("GET", "/variables")
         existing = {}
         if isinstance(body, dict):
@@ -144,21 +145,43 @@ def register_admin_webhook():
         token = existing.get("TELEGRAM_ADMIN_BOT_TOKEN", "")
     if not token:
         print("  SKIP (pas de TELEGRAM_ADMIN_BOT_TOKEN)")
-        return
+        return None
 
-    base_url = os.environ.get("N8N_BASE_URL", "").rstrip("/")
-    webhook_url = base_url + "/webhook/admin-bot"
-    tg_url = "https://api.telegram.org/bot" + token + "/setWebhook"
-    data = json.dumps({"url": webhook_url, "allowed_updates": ["message"]}).encode()
-    req = urllib.request.Request(tg_url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            resp = json.loads(r.read().decode())
-            ok = resp.get("ok", False)
-            print(f"  {'OK' if ok else 'ERREUR'} setWebhook -> {resp.get('description', '')}")
-    except Exception as e:
-        print(f"  ERREUR setWebhook : {e}")
+    cred_name = "Telegram Admin Bot"
+    st, body = call("GET", "/credentials", params={"limit": 200})
+    creds = body.get("data", body) if isinstance(body, dict) else (body if isinstance(body, list) else [])
+    for c in creds:
+        if c.get("name") == cred_name:
+            print(f"  OK  {cred_name} (deja presente, id={c['id']})")
+            return {"id": c["id"], "name": cred_name}
+
+    payload = {
+        "name": cred_name,
+        "type": "telegramApi",
+        "data": {"accessToken": token},
+    }
+    st2, r = call("POST", "/credentials", body=payload)
+    if st2 in (200, 201) and isinstance(r, dict) and r.get("id"):
+        print(f"  CREE {cred_name} -> id={r['id']}")
+        return {"id": r["id"], "name": cred_name}
+    else:
+        print(f"  ERREUR creation credential : {st2} {str(r)[:200]}")
+        return None
+
+
+def update_credentials_json(admin_cred):
+    """Met a jour credentials.json avec la reference du bot admin."""
+    creds_path = os.path.join(HERE, "credentials.json")
+    if not os.path.exists(creds_path):
+        return
+    data = json.load(open(creds_path, encoding="utf-8"))
+    if "telegramAdminApi" in data and data["telegramAdminApi"].get("id") == admin_cred["id"]:
+        return
+    data["telegramAdminApi"] = admin_cred
+    with open(creds_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"  credentials.json mis a jour avec telegramAdminApi")
 
 
 def main():
@@ -168,10 +191,21 @@ def main():
         sys.exit(2)
 
     ensure_variables()
+    admin_cred = ensure_admin_credential()
+    if admin_cred:
+        update_credentials_json(admin_cred)
+
+    # Rebuild le pipeline (credentials.json potentiellement mis a jour)
+    print("\n=== Build pipeline ===")
+    build_script = os.path.join(HERE, "build_pipeline.py")
+    rc = subprocess.call([sys.executable, build_script])
+    if rc != 0:
+        print("  ERREUR build_pipeline.py", file=sys.stderr)
+        sys.exit(rc)
+
     wf_id = deploy_workflow()
     if wf_id:
         toggle_workflow(wf_id)
-    register_admin_webhook()
     print("\n=== Termine ===")
 
 
