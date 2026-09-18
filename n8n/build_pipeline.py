@@ -676,7 +676,24 @@ if (/\b(ouverts?|open|nouveau)\b/i.test(text)) statusFilter = 'ouvert';
 else if (/\ben[\s._-]?cours\b|in[\s._-]?progress|traitement/i.test(text)) statusFilter = 'en_cours';
 else if (/\b(fini|termin|clos|closed?|ferm|resolu|resolved|complet)\b/i.test(text)) statusFilter = 'clos';
 
-return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter } }];
+// 4. Filtre par canal/plateforme (detecte independamment)
+let channelFilter = '';
+if (/\b(outlook|email|mail|courriel|boite)\b/i.test(text)) channelFilter = 'email';
+else if (/\b(telegram)\b/i.test(text)) channelFilter = 'telegram';
+else if (/\b(teams)\b/i.test(text)) channelFilter = 'teams';
+else if (/\b(google\s*chat|gchat|g-chat|hangouts?|chat\s+google)\b/i.test(text)) channelFilter = 'google_chat';
+else if (/\b(jira|jsm)\b/i.test(text)) channelFilter = 'jira';
+else if (/\b(clickup|click[\s-]?up)\b/i.test(text)) channelFilter = 'clickup';
+else if (/\b(confluence|wiki)\b/i.test(text)) channelFilter = 'confluence';
+
+// 5. Filtre par tenant/societe (detecte independamment)
+let tenantFilter = '';
+if (/\b(beautybay|beauty[\s-]?bay|regard[\s-]?beauty)\b/i.test(text)) tenantFilter = 'beautybay';
+else if (/\b(bazarchic|bazar[\s-]?chic)\b/i.test(text)) tenantFilter = 'bazarchic';
+else if (/\b(bouchara)\b/i.test(text)) tenantFilter = 'bouchara';
+else if (/\b(liban|it[\s-]?support[\s-]?liban)\b/i.test(text)) tenantFilter = 'liban';
+
+return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter } }];
 """.strip()
 
 ADMIN_FORMAT_JS = r"""
@@ -687,6 +704,8 @@ const cmd = cmdData.cmd;
 const groupBy = cmdData.groupBy;
 const chatId = cmdData.chatId;
 const statusFilter = cmdData.statusFilter || '';
+const channelFilter = cmdData.channelFilter || '';
+const tenantFilter = cmdData.tenantFilter || '';
 const allTickets = $input.all().map(i => i.json).filter(t => t.id);
 
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -702,6 +721,33 @@ function matchStatus(s, filter) {
   return (statusMap[filter]||[]).some(k => ls.includes(k) || ls === k);
 }
 function isOpen(s) { return !matchStatus(s, 'clos'); }
+
+const channelMap = {
+  'email': ['email','outlook','mail','imap','smtp'],
+  'telegram': ['telegram'],
+  'teams': ['teams','microsoft teams'],
+  'google_chat': ['google_chat','google chat','gchat','hangouts'],
+  'jira': ['jira','jsm','jira service'],
+  'clickup': ['clickup','click up'],
+  'confluence': ['confluence','wiki']
+};
+function matchChannel(platform, filter) {
+  if (!filter) return true;
+  const lp = String(platform||'').toLowerCase();
+  return (channelMap[filter]||[]).some(k => lp.includes(k) || lp === k);
+}
+
+const tenantMap = {
+  'beautybay': ['beautybay','beauty bay','regard beauty','regardbeauty'],
+  'bazarchic': ['bazarchic','bazar chic'],
+  'bouchara': ['bouchara'],
+  'liban': ['liban','it support liban','itsupportliban']
+};
+function matchTenant(name, filter) {
+  if (!filter) return true;
+  const ln = String(name||'').toLowerCase();
+  return (tenantMap[filter]||[]).some(k => ln.includes(k) || ln === k);
+}
 const statusIcon = s => {
   const ls = String(s||'').toLowerCase();
   if (statusMap.clos.some(k => ls.includes(k))) return '✅';
@@ -741,11 +787,21 @@ if (cmd === 'help') {
     + '• <code>tickets par departement</code> — par societe\n'
     + '• <code>tickets par priorite</code> — par urgence\n'
     + '• <code>tickets par statut</code> — par etat (ouvert, en cours, clos)\n\n'
-    + '<b>Filtres :</b>\n'
+    + '<b>Filtres par statut :</b>\n'
     + '• <code>tickets ouverts</code> — uniquement ouverts\n'
     + '• <code>tickets en cours</code> — uniquement en traitement\n'
-    + '• <code>tickets clos</code> — uniquement termines\n'
-    + '• <code>tickets en cours par canal</code> — filtre + groupement\n\n'
+    + '• <code>tickets clos</code> — uniquement termines\n\n'
+    + '<b>Filtres par canal :</b>\n'
+    + '• <code>tickets outlook</code> / <code>tickets email</code>\n'
+    + '• <code>tickets telegram</code> / <code>tickets teams</code>\n'
+    + '• <code>tickets jira</code> / <code>tickets google chat</code>\n\n'
+    + '<b>Filtres par societe :</b>\n'
+    + '• <code>tickets beautybay</code> / <code>tickets bazarchic</code>\n'
+    + '• <code>tickets bouchara</code> / <code>tickets liban</code>\n\n'
+    + '<b>Combinaisons :</b>\n'
+    + '• <code>tickets outlook beautybay</code> — canal + societe\n'
+    + '• <code>tickets en cours par canal</code> — statut + groupement\n'
+    + '• <code>tickets outlook en cours</code> — canal + statut\n\n'
     + '<b>Rapports :</b>\n'
     + '• <code>rapport</code> — tous statuts, tous canaux\n'
     + '• <code>rapport ouverts</code> / <code>rapport clos</code>\n'
@@ -754,20 +810,34 @@ if (cmd === 'help') {
   return [{ json: { reply, chatId } }];
 }
 
-// --- Filtrage commun : statusFilter s'applique a TOUTES les commandes ---
+// --- Filtrage commun : statusFilter, channelFilter, tenantFilter s'appliquent partout ---
 let pool = allTickets;
+
+// Filtre canal
+if (channelFilter) pool = pool.filter(t => matchChannel(t.platform, channelFilter));
+// Filtre tenant
+if (tenantFilter) pool = pool.filter(t => matchTenant(t.tenant_name, tenantFilter));
+// Filtre statut ou defaut selon commande
 if (statusFilter) {
-  pool = allTickets.filter(t => matchStatus(t.status, statusFilter));
+  pool = pool.filter(t => matchStatus(t.status, statusFilter));
 } else if (cmd === 'tickets') {
-  pool = allTickets.filter(t => isOpen(t.status));
+  pool = pool.filter(t => isOpen(t.status));
 } else if (cmd === 'recents') {
   const cutoff = new Date(Date.now() - 24*3600*1000).toISOString();
-  pool = allTickets.filter(t => (t.cree_le_iso || '') > cutoff);
+  pool = pool.filter(t => (t.cree_le_iso || '') > cutoff);
 }
 
+// Description des filtres actifs pour les messages vides
+const activeFilters = [];
+if (channelFilter) activeFilters.push('canal "' + esc(channelFilter) + '"');
+if (tenantFilter) activeFilters.push('societe "' + esc(tenantFilter) + '"');
+if (statusFilter) activeFilters.push('statut "' + esc(statusFilter) + '"');
+const filterDesc = activeFilters.length ? ' (filtres : ' + activeFilters.join(', ') + ')' : '';
+
 if (pool.length === 0) {
-  if (cmd === 'recents') reply = '✅ Aucune nouvelle demande dans les dernieres 24h.';
-  else if (statusFilter) reply = '📭 Aucun ticket avec le statut "' + esc(statusFilter) + '".';
+  if (activeFilters.length) reply = '📭 Aucun ticket trouve' + filterDesc + '.\n\n'
+    + '💡 <i>Verifiez que des tickets existent pour ce canal/cette societe dans la base.</i>';
+  else if (cmd === 'recents') reply = '✅ Aucune nouvelle demande dans les dernieres 24h.';
   else reply = '✅ Aucun ticket en cours. Tout est resolu !';
   return [{ json: { reply, chatId } }];
 }
@@ -869,6 +939,8 @@ const icon = groupIcon[groupBy] || '📁';
 let label = cmd === 'recents' ? 'Demandes recentes (24h)' : 'Tickets';
 if (statusFilter) label += ' ' + (statusLabel[statusFilter]||statusFilter).replace(/[^ ]+\s*/, '');
 else if (cmd === 'tickets') label += ' en cours';
+if (channelFilter) label += ' [' + esc(channelFilter) + ']';
+if (tenantFilter) label += ' [' + esc(tenantFilter) + ']';
 reply = '📋 <b>' + label + '</b> (' + pool.length + ') — par ' + esc(groupBy) + '\n\n';
 
 const sortedGroups = Object.entries(groups).sort((a,b) => {
