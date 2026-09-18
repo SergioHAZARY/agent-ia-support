@@ -326,6 +326,16 @@ if (status === 'escalated' && reply.indexOf('technicien') === -1) {
         + "Reference : " + ticketRef;
 }
 
+// 4. Si escalade N3 avec ClickUp, ajouter la reference de la tache
+if (level === 'N3') {
+  try {
+    const alertData = $('Preparer alerte DEV MG').item.json;
+    if (alertData && alertData.task_url) {
+      reply += "\nUn technicien a ete alerte et une tache a ete creee : " + alertData.task_url;
+    }
+  } catch(e) { /* pas d'escalade ClickUp (erreur ou autre niveau) */ }
+}
+
 // Chat ID : vient du trigger Telegram ou du champ external_id
 let chat_id = src.external_id || '';
 if (platform === 'telegram') {
@@ -416,6 +426,64 @@ if (visionResponse) {
 return [{ json: src }];
 """.strip()
 
+PREPARE_ESCALADE_JS = r"""
+// Prepare l'escalade N3 : payload ClickUp + message alerte techniciens.
+const parsed = $('Parser + garde-fous').item.json;
+let src;
+try { src = $('Fusionner texte image').item.json; } catch(e) { src = $('Normaliser (multicanal)').item.json; }
+
+let ticketRef = '';
+try {
+  const pg = $('PG: creer le ticket').item.json;
+  ticketRef = pg.ref || ('IT-' + (pg.id || '').toString().slice(0, 5));
+} catch(e) { ticketRef = 'IT-' + Date.now().toString().slice(-5); }
+
+// Mapping priorite vers ClickUp (1=urgent, 2=high, 3=normal, 4=low)
+const priorityMap = { p1: 1, p2: 2, p3: 3, p4: 4 };
+const cuPriority = priorityMap[parsed.priority] || 3;
+
+const taskName = '[' + ticketRef + '] ' + (parsed.title || parsed.summary || 'Escalade agent IA');
+const taskDesc = '**Ticket:** ' + ticketRef + '\n'
+  + '**Demandeur:** ' + (src.sender_raw || 'Inconnu') + '\n'
+  + '**Canal:** ' + (src.platform || '') + ' / ' + (src.external_id || '') + '\n'
+  + '**Categorie:** ' + (parsed.category || '') + ' / ' + (parsed.subcategory || '') + '\n'
+  + '**Priorite:** ' + (parsed.priority || 'p3') + '\n'
+  + '**Raison escalade:** ' + (parsed.escalation_reason || 'Intervention humaine requise') + '\n\n'
+  + '**Resume:** ' + (parsed.summary || '') + '\n\n'
+  + '**Message original:**\n' + (src.message_body || '').slice(0, 1000) + '\n\n'
+  + '**Reponse proposee:**\n' + (parsed.proposed_response || '').slice(0, 1000);
+
+return [{ json: {
+  clickup_payload: { name: taskName, markdown_description: taskDesc, priority: cuPriority,
+    status: 'Open', tags: ['agent-ia', parsed.category || 'support'].filter(Boolean) },
+  ticketRef, platform: src.platform || '',
+  sender_raw: src.sender_raw || '',
+  escalation_reason: parsed.escalation_reason || 'Intervention humaine requise',
+  summary: parsed.summary || parsed.title || '',
+  category: parsed.category || '',
+  priority: parsed.priority || 'p3'
+}}];
+""".strip()
+
+CLICKUP_ALERT_JS = r"""
+// Construit le message d'alerte pour le groupe Telegram DEV MG apres creation ClickUp.
+const esc = $('Preparer escalade N3').item.json;
+const cuResp = $json;
+const taskId = cuResp.id || '';
+const taskUrl = cuResp.url || ('https://app.clickup.com/t/' + taskId);
+
+const msg = '⚠️ *ESCALADE AGENT IA*\n\n'
+  + '🆔 *Ticket:* ' + esc.ticketRef + '\n'
+  + '👤 *Demandeur:* ' + esc.sender_raw + '\n'
+  + '📁 *Categorie:* ' + esc.category + '\n'
+  + '🚨 *Priorite:* ' + esc.priority + '\n\n'
+  + '📝 *Resume:* ' + esc.summary.slice(0, 300) + '\n\n'
+  + '❗ *Raison:* ' + esc.escalation_reason + '\n\n'
+  + '🔗 *Tache ClickUp:* ' + taskUrl;
+
+return [{ json: { alert_text: msg, task_url: taskUrl, task_id: taskId } }];
+""".strip()
+
 JIRA_DEDUP_JS = r"""
 // Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).
 // Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).
@@ -487,6 +555,7 @@ NOTE = (
     "## AgentSupport - Pipeline (workflow unique, multicanal)\n\n"
     "Canaux -> n8n normalise -> PostgreSQL (events) -> contexte -> AGENT CLAUDE\n"
     "-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n"
+    "N3 -> ClickUp (tache dans Escalades Agent IA) -> Telegram DEV MG (alerte techniciens).\n"
     "Branche reporting separee : webhook -> PostgreSQL -> reponse.\n\n"
     "Genere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.\n\n"
     "CREDENTIALS A ATTACHER (puis activer) :\n"
@@ -616,7 +685,28 @@ nodes = [
     node("N0 repondre", "n8n-nodes-base.noOp", 1, [2260, 120]),
     node("N1 valider puis executer", "n8n-nodes-base.noOp", 1, [2260, 260]),
     node("N2 guider", "n8n-nodes-base.noOp", 1, [2260, 400]),
-    node("N3 escalader", "n8n-nodes-base.noOp", 1, [2260, 540]),
+    # --- Escalade N3 : ClickUp + alerte Telegram DEV MG ---
+    node("Preparer escalade N3", "n8n-nodes-base.code", 2, [2260, 540],
+         {"jsCode": PREPARE_ESCALADE_JS}),
+    node("ClickUp: creer tache", "n8n-nodes-base.httpRequest", 4.2, [2500, 540], {
+        "method": "POST",
+        "url": "https://api.clickup.com/api/v2/list/{{ $vars.CLICKUP_LIST_ID || '901222267724' }}/task",
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [
+            {"name": "Authorization", "value": "={{ $vars.CLICKUP_API_TOKEN }}"},
+            {"name": "Content-Type", "value": "application/json"}]},
+        "sendBody": True,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.clickup_payload) }}",
+        "options": {"response": {"response": {"responseFormat": "json"}}}}),
+    node("Preparer alerte DEV MG", "n8n-nodes-base.code", 2, [2740, 540],
+         {"jsCode": CLICKUP_ALERT_JS}),
+    node("Telegram: alerter techniciens", "n8n-nodes-base.telegram", 1.2, [2980, 540], {
+        "operation": "sendMessage",
+        "chatId": "={{ $vars.TELEGRAM_DEVMG_CHAT_ID || '-5219441607' }}",
+        "text": "={{ $json.alert_text }}",
+        "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False}},
+        creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
 
     # --- Réponse Telegram ---
     node("Preparer reponse", "n8n-nodes-base.code", 2, [2500, 300], {"jsCode": PREPARE_REPLY_TICKET_JS}),
@@ -677,11 +767,15 @@ connections = merge_conn(
         ("Router par niveau", "N0 repondre", 0),
         ("Router par niveau", "N1 valider puis executer", 1),
         ("Router par niveau", "N2 guider", 2),
-        ("Router par niveau", "N3 escalader", 3),
+        ("Router par niveau", "Preparer escalade N3", 3),
         ("N0 repondre", "Preparer reponse"),
         ("N1 valider puis executer", "Preparer reponse"),
         ("N2 guider", "Preparer reponse"),
-        ("N3 escalader", "Preparer reponse"),
+        # N3 : escalade ClickUp + alerte Telegram DEV MG, puis reponse utilisateur
+        ("Preparer escalade N3", "ClickUp: creer tache"),
+        ("ClickUp: creer tache", "Preparer alerte DEV MG"),
+        ("Preparer alerte DEV MG", "Telegram: alerter techniciens"),
+        ("Telegram: alerter techniciens", "Preparer reponse"),
         ("Preparer reponse", "Est Telegram ?"),
         ("Est Telegram ?", "Telegram: envoyer reponse", 0),
         ("Webhook reporting", "PG: tickets en cours"),
