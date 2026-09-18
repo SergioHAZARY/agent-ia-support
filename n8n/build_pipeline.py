@@ -83,47 +83,28 @@ def merge_conn(*cs):
 # Code des noeuds
 # --------------------------------------------------------------------------- #
 FILTER_TELEGRAM_JS = r"""
-// Filtre Telegram : ne repondre que si le bot est mentionne (@itmg_support_bot)
-// ou si c'est un message prive (DM). Ignorer les messages de groupe sans mention.
+// Filtre Telegram : traiter tout message textuel (DM ou groupe de support).
+// Ignorer uniquement les updates sans contenu exploitable (sticker seul,
+// entree/sortie de membre, etc.). Le triage Claude decidera si c'est pertinent.
 const j = $json;
 const t = j.message || j.channel_post || {};
 const chat = t.chat || {};
-const chatType = chat.type || '';  // 'private', 'group', 'supergroup'
-const text = (t.text || t.caption || '').toLowerCase();
 const BOT_USERNAME = 'itmg_support_bot';
 
-// En DM (private) -> toujours repondre
-if (chatType === 'private') {
-  return [{ json: j }];
+// Ignorer les updates sans message exploitable
+if (!t.text && !t.caption && !t.photo && !t.document && !t.voice) {
+  return [];
 }
 
-// En groupe/supergroupe -> repondre seulement si le bot est mentionne
-// Verifier dans le texte
-const mentionInText = text.includes('@' + BOT_USERNAME);
-
-// Verifier dans les entites (mentions structurees Telegram)
-const entities = t.entities || t.caption_entities || [];
-const mentionInEntities = entities.some(e => {
-  if (e.type === 'mention') {
-    const mentioned = (t.text || '').substring(e.offset, e.offset + e.length).toLowerCase();
-    return mentioned === '@' + BOT_USERNAME;
-  }
-  return false;
-});
-
-// Verifier si c'est une reponse a un message du bot
-const replyToBot = (t.reply_to_message || {}).from && (t.reply_to_message.from.is_bot === true);
-
-if (mentionInText || mentionInEntities || replyToBot) {
-  // Nettoyer le @mention du texte pour ne garder que la question
-  if (t.text) {
-    t.text = t.text.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
-  }
-  return [{ json: Object.assign({}, j, { message: t }) }];
+// Nettoyer @mention si presente (pour ne garder que la question)
+if (t.text) {
+  t.text = t.text.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
+}
+if (t.caption) {
+  t.caption = t.caption.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
 }
 
-// Pas de mention -> on ignore (retourne vide)
-return [];
+return [{ json: Object.assign({}, j, { message: t }) }];
 """.strip()
 
 NORMALIZE_JS = r"""
@@ -911,12 +892,10 @@ nodes = [
     node("Canal sans livraison directe", "n8n-nodes-base.noOp", 1, [3100, 680]),
     # Audit PG : enregistrer la reponse finale + ticket_events (pour tickets uniquement)
     pg_node("PG: audit reponse", [3560, 300], PG_AUDIT_SQL,
-            "={{ [$json.reply_text || $('Preparer reponse').item.json.reply_text || '', "
-            "$('Preparer reponse').item.json.ticket_id || "
-            "  $('Preparer reponse (non-ticket)').item.json.ticket_id || '00000000-0000-0000-0000-000000000000', "
-            "$('Preparer reponse').item.json.platform || "
-            "  $('Preparer reponse (non-ticket)').item.json.platform || '', "
-            "$('Preparer reponse').item.json.autonomy_level || 'N0', "
+            "={{ [$('Router par canal').item.json.reply_text || '', "
+            "$('Router par canal').item.json.ticket_id || '00000000-0000-0000-0000-000000000000', "
+            "$('Router par canal').item.json.platform || '', "
+            "$('Router par canal').item.json.autonomy_level || 'N0', "
             "true] }}"),
 
     # --- Branche reporting ---
