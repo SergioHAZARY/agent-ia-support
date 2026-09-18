@@ -677,9 +677,10 @@ return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter } }];
 
 ADMIN_FORMAT_JS = r"""
 // Formate la reponse admin avec groupement par categorie/canal/priorite/tenant.
-const cmdData = $('Parser admin').item.json;
+const cmdData = $('Parser admin').first().json;
 const cmd = cmdData.cmd;
 const groupBy = cmdData.groupBy;
+const chatId = cmdData.chatId;
 const tickets = $input.all().map(i => i.json).filter(t => t.id);
 
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -700,7 +701,7 @@ if (cmd === 'start') {
     + '/stats — Statistiques globales\n'
     + '/help — Cette aide\n\n'
     + '📡 Les notifications de nouveaux tickets arrivent automatiquement dans le groupe DEV MG.';
-  return [{ json: { reply } }];
+  return [{ json: { reply, chatId } }];
 }
 
 if (cmd === 'help') {
@@ -715,7 +716,7 @@ if (cmd === 'help') {
     + '• <code>rapport clos</code> — uniquement les tickets termines\n'
     + '• <code>recents</code> — tickets des dernieres 24h\n'
     + '• <code>stats</code> — comptages et repartition';
-  return [{ json: { reply } }];
+  return [{ json: { reply, chatId } }];
 }
 
 const statusFilter = cmdData.statusFilter || '';
@@ -746,7 +747,7 @@ if (cmd === 'rapport') {
 
   if (pool.length === 0) {
     reply = '📭 Aucun ticket' + (statusFilter ? ' avec le statut "' + esc(statusFilter) + '"' : '') + '.';
-    return [{ json: { reply } }];
+    return [{ json: { reply, chatId } }];
   }
 
   const title = statusFilter
@@ -799,7 +800,7 @@ if (cmd === 'rapport') {
   for (const [c,n] of Object.entries(byCat).sort((a,b) => b[1]-a[1]))
     reply += '  • ' + esc(c) + ' : ' + n + '\n';
 
-  return [{ json: { reply } }];
+  return [{ json: { reply, chatId } }];
 }
 
 // Filtrer les recents (created_at < 24h) cote JS
@@ -813,7 +814,7 @@ if (filtered.length === 0) {
   reply = cmd === 'recents'
     ? '✅ Aucune nouvelle demande dans les dernieres 24h.'
     : '✅ Aucun ticket en cours. Tout est resolu !';
-  return [{ json: { reply } }];
+  return [{ json: { reply, chatId } }];
 }
 
 if (cmd === 'stats') {
@@ -837,7 +838,7 @@ if (cmd === 'stats') {
   reply += '\n<b>Par niveau :</b>\n';
   for (const k of ['N0','N1','N2','N3'])
     if (byLevel[k]) reply += '  • ' + k + ' : ' + byLevel[k] + '\n';
-  return [{ json: { reply } }];
+  return [{ json: { reply, chatId } }];
 }
 
 // Groupement standard
@@ -869,7 +870,7 @@ for (const [group, items] of Object.entries(groups).sort((a,b) => a[0].localeCom
   reply += '\n';
 }
 
-return [{ json: { reply } }];
+return [{ json: { reply, chatId } }];
 """.strip()
 
 JIRA_DEDUP_JS = r"""
@@ -1319,7 +1320,7 @@ nodes = [
         "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendMessage",
         "sendBody": True,
         "specifyBody": "json",
-        "jsonBody": '={{ JSON.stringify({ chat_id: $("Parser admin").item.json.chatId,'
+        "jsonBody": '={{ JSON.stringify({ chat_id: $json.chatId,'
                     ' text: $json.reply, parse_mode: "HTML" }) }}',
         "options": {"response": {"response": {"responseFormat": "json"}}},
         "sendHeaders": True,
