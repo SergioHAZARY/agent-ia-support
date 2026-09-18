@@ -42,6 +42,7 @@ jobs:
           N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
           CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_BOT_TOKEN: ${{ secrets.TELEGRAM_ADMIN_BOT_TOKEN }}
         run: |
           if [ -z "$N8N_API_KEY" ]; then
             echo "::warning::Secrets n8n absents — déploiement ignoré. Ajoutez N8N_BASE_URL et N8N_API_KEY."

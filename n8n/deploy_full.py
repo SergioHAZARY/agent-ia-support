@@ -46,6 +46,7 @@ REQUIRED_VARS = {
     "CLICKUP_LIST_ID": "901222267724",
     "TELEGRAM_DEVMG_CHAT_ID": "-5219441607",
     "TELEGRAM_BOT_TOKEN": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+    "TELEGRAM_ADMIN_BOT_TOKEN": os.environ.get("TELEGRAM_ADMIN_BOT_TOKEN", ""),
 }
 
 
@@ -126,6 +127,40 @@ def toggle_workflow(wf_id):
         print("  ATTENTION : activer manuellement dans l'editeur n8n")
 
 
+def register_admin_webhook():
+    """Enregistre le webhook Telegram pour le bot admin @itmg_admin_bot."""
+    print("\n=== Webhook bot admin ===")
+    token = os.environ.get("TELEGRAM_ADMIN_BOT_TOKEN", "")
+    if not token:
+        # Essayer de recuperer depuis les variables n8n existantes
+        st, body = call("GET", "/variables")
+        existing = {}
+        if isinstance(body, dict):
+            for v in body.get("data", []):
+                existing[v["key"]] = v.get("value", "")
+        elif isinstance(body, list):
+            for v in body:
+                existing[v["key"]] = v.get("value", "")
+        token = existing.get("TELEGRAM_ADMIN_BOT_TOKEN", "")
+    if not token:
+        print("  SKIP (pas de TELEGRAM_ADMIN_BOT_TOKEN)")
+        return
+
+    base_url = os.environ.get("N8N_BASE_URL", "").rstrip("/")
+    webhook_url = base_url + "/webhook/admin-bot"
+    tg_url = "https://api.telegram.org/bot" + token + "/setWebhook"
+    data = json.dumps({"url": webhook_url, "allowed_updates": ["message"]}).encode()
+    req = urllib.request.Request(tg_url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read().decode())
+            ok = resp.get("ok", False)
+            print(f"  {'OK' if ok else 'ERREUR'} setWebhook -> {resp.get('description', '')}")
+    except Exception as e:
+        print(f"  ERREUR setWebhook : {e}")
+
+
 def main():
     if not BASE.startswith("http") or not KEY:
         print("N8N_BASE_URL ou N8N_API_KEY manquant.", file=sys.stderr)
@@ -136,6 +171,7 @@ def main():
     wf_id = deploy_workflow()
     if wf_id:
         toggle_workflow(wf_id)
+    register_admin_webhook()
     print("\n=== Termine ===")
 
 

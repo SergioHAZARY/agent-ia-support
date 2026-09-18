@@ -644,6 +644,139 @@ const msg = '📩 <b>Nouveau ticket</b> ' + esc_html(ticketRef) + '\n'
 return [{ json: { notif_text: msg } }];
 """.strip()
 
+# ----------- Admin Bot (@itmg_admin_bot) — branche reporting en temps reel ---
+
+ADMIN_PARSE_JS = r"""
+// Parse la commande admin du bot @itmg_admin_bot.
+const j = $json;
+const msg = j.message || j.channel_post || {};
+const text = (msg.text || '').toLowerCase().trim();
+const chatId = String((msg.chat || {}).id || '');
+const chatType = (msg.chat || {}).type || 'private';
+
+let cmd = 'tickets';
+let groupBy = 'categorie';
+
+if (/^\/(start)/.test(text)) cmd = 'start';
+else if (/^\/(help)|aide/.test(text)) cmd = 'help';
+else if (/stats|statistiq/.test(text)) { cmd = 'stats'; }
+else if (/recent|derniers?|24h|nouveau/.test(text)) { cmd = 'recents'; }
+else if (/canal|canaux|plateforme|channel/.test(text)) groupBy = 'canal';
+else if (/departement|societe|tenant|entite/.test(text)) groupBy = 'tenant';
+else if (/priorite|urgence|p1|p2/.test(text)) groupBy = 'priorite';
+else if (/ticket|demande|en.cours|ouvert/.test(text)) cmd = 'tickets';
+
+return [{ json: { cmd, groupBy, chatId, chatType, text } }];
+""".strip()
+
+ADMIN_FORMAT_JS = r"""
+// Formate la reponse admin avec groupement par categorie/canal/priorite/tenant.
+const cmdData = $('Parser admin').item.json;
+const cmd = cmdData.cmd;
+const groupBy = cmdData.groupBy;
+const tickets = $input.all().map(i => i.json).filter(t => t.id);
+
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const prioIcon = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'};
+
+let reply = '';
+
+if (cmd === 'start') {
+  reply = '🤖 <b>IT MG Admin Bot</b>\n\n'
+    + 'Je suis le bot administrateur. Je surveille tous les canaux en temps reel.\n\n'
+    + '<b>Commandes :</b>\n'
+    + '/tickets — Tickets en cours (par categorie)\n'
+    + '<i>tickets par canal</i> — Grouper par plateforme\n'
+    + '<i>tickets par priorite</i> — Grouper par priorite\n'
+    + '<i>tickets par departement</i> — Grouper par societe\n'
+    + '/recents — Dernieres demandes (24h)\n'
+    + '/stats — Statistiques globales\n'
+    + '/help — Cette aide\n\n'
+    + '📡 Les notifications de nouveaux tickets arrivent automatiquement dans le groupe DEV MG.';
+  return [{ json: { reply } }];
+}
+
+if (cmd === 'help') {
+  reply = '📋 <b>Aide IT MG Admin</b>\n\n'
+    + '• <code>tickets</code> — tous les tickets en cours par categorie\n'
+    + '• <code>tickets par canal</code> — groupes par plateforme (Telegram, Jira, email...)\n'
+    + '• <code>tickets par priorite</code> — groupes par urgence\n'
+    + '• <code>tickets par departement</code> — groupes par societe\n'
+    + '• <code>recents</code> — tickets des dernieres 24h\n'
+    + '• <code>stats</code> — comptages et repartition';
+  return [{ json: { reply } }];
+}
+
+// Filtrer les recents (created_at < 24h) cote JS
+let filtered = tickets;
+if (cmd === 'recents') {
+  const cutoff = new Date(Date.now() - 24*3600*1000).toISOString();
+  filtered = tickets.filter(t => (t.cree_le_iso || t.created_at || '') > cutoff);
+}
+
+if (filtered.length === 0) {
+  reply = cmd === 'recents'
+    ? '✅ Aucune nouvelle demande dans les dernieres 24h.'
+    : '✅ Aucun ticket en cours. Tout est resolu !';
+  return [{ json: { reply } }];
+}
+
+if (cmd === 'stats') {
+  const byCat = {}, byPrio = {}, byPlatform = {}, byLevel = {};
+  for (const t of filtered) {
+    byCat[t.category||'autre'] = (byCat[t.category||'autre']||0) + 1;
+    byPrio[t.priority||'p4'] = (byPrio[t.priority||'p4']||0) + 1;
+    byPlatform[t.platform||'inconnu'] = (byPlatform[t.platform||'inconnu']||0) + 1;
+    byLevel[t.autonomy_level||'N0'] = (byLevel[t.autonomy_level||'N0']||0) + 1;
+  }
+  reply = '📊 <b>Statistiques</b> (' + filtered.length + ' tickets en cours)\n\n';
+  reply += '<b>Par categorie :</b>\n';
+  for (const [k,v] of Object.entries(byCat).sort((a,b) => b[1]-a[1]))
+    reply += '  • ' + esc(k) + ' : ' + v + '\n';
+  reply += '\n<b>Par priorite :</b>\n';
+  for (const k of ['p1','p2','p3','p4'])
+    if (byPrio[k]) reply += '  ' + (prioIcon[k]||'') + ' ' + k.toUpperCase() + ' : ' + byPrio[k] + '\n';
+  reply += '\n<b>Par canal :</b>\n';
+  for (const [k,v] of Object.entries(byPlatform).sort((a,b) => b[1]-a[1]))
+    reply += '  • ' + esc(k) + ' : ' + v + '\n';
+  reply += '\n<b>Par niveau :</b>\n';
+  for (const k of ['N0','N1','N2','N3'])
+    if (byLevel[k]) reply += '  • ' + k + ' : ' + byLevel[k] + '\n';
+  return [{ json: { reply } }];
+}
+
+// Groupement standard
+const groups = {};
+for (const t of filtered) {
+  let key;
+  if (groupBy === 'canal') key = t.platform || 'inconnu';
+  else if (groupBy === 'tenant') key = t.tenant_name || 'non attribue';
+  else if (groupBy === 'priorite') key = t.priority || 'p4';
+  else key = t.category || 'autre';
+  if (!groups[key]) groups[key] = [];
+  groups[key].push(t);
+}
+
+const label = cmd === 'recents' ? 'Demandes recentes (24h)' : 'Tickets en cours';
+reply = '📋 <b>' + label + '</b> (' + filtered.length + ') — par ' + esc(groupBy) + '\n\n';
+
+for (const [group, items] of Object.entries(groups).sort((a,b) => a[0].localeCompare(b[0]))) {
+  reply += '📁 <b>' + esc(group.toUpperCase()) + '</b> (' + items.length + ')\n';
+  for (const t of items.slice(0, 8)) {
+    const p = prioIcon[t.priority] || '⚪';
+    reply += '  ' + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '
+      + esc((t.title||'').slice(0,50)) + '\n'
+      + '    ' + esc(t.autonomy_level||'') + ' | ' + esc(t.status||'')
+      + (t.tenant_name && t.tenant_name !== 'non attribue' ? ' | ' + esc(t.tenant_name) : '')
+      + (t.platform ? ' | ' + esc(t.platform) : '') + '\n';
+  }
+  if (items.length > 8) reply += '  <i>... et ' + (items.length - 8) + ' autres</i>\n';
+  reply += '\n';
+}
+
+return [{ json: { reply } }];
+""".strip()
+
 JIRA_DEDUP_JS = r"""
 // Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).
 // Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).
@@ -707,6 +840,19 @@ PG_REPORT_DM_SQL = (
     " WHERE status NOT IN ('clos', 'annule')"
     " ORDER BY CASE priority WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 WHEN 'p3' THEN 3 ELSE 4 END,"
     " created_at DESC LIMIT 20;")
+
+PG_ADMIN_TICKETS_SQL = (
+    "SELECT t.id::text, t.ref, t.title, t.category, t.subcategory,"
+    " t.priority, t.status, t.autonomy_level,"
+    " COALESCE(te.name, 'non attribue') as tenant_name,"
+    " COALESCE(ch.platform, 'inconnu') as platform,"
+    " to_char(t.created_at, 'DD/MM HH24:MI') as cree_le,"
+    " t.created_at as cree_le_iso"
+    " FROM tickets t"
+    " LEFT JOIN tenants te ON te.id = t.tenant_id"
+    " LEFT JOIN channels ch ON ch.id = t.channel_id"
+    " WHERE t.status NOT IN ('clos', 'annule')"
+    " ORDER BY t.created_at DESC LIMIT 50;")
 
 # Enrichissement du contexte en une seule requete : historique, cas_similaires,
 # runbooks disponibles, et identite du demandeur.
@@ -1056,6 +1202,35 @@ nodes = [
         "responseMode": "lastNode", "options": {}}),
     pg_node("PG: tickets en cours", [440, 820], PG_REPORT_SQL, ""),
     node("Formater le rapport", "n8n-nodes-base.code", 2, [660, 820], {"jsCode": REPORT_JS}),
+
+    # --- Branche Bot Admin (@itmg_admin_bot) ---
+    sticky("noteAdmin",
+           "## Bot Admin (@itmg_admin_bot)\n"
+           "Webhook /admin-bot recoit les messages du bot admin.\n"
+           "Commandes : /tickets, /stats, /recents, tickets par canal/priorite/departement.\n"
+           "Reponses groupees par categorie, canal, priorite ou societe.\n"
+           "Token dans la variable n8n TELEGRAM_ADMIN_BOT_TOKEN.",
+           [-60, 940], w=520, h=140),
+    node("Webhook Admin Bot", "n8n-nodes-base.webhook", 1.1, [220, 1020], {
+        "httpMethod": "POST", "path": "admin-bot",
+        "responseMode": "onReceived", "options": {}}),
+    node("Parser admin", "n8n-nodes-base.code", 2, [400, 1020],
+         {"jsCode": ADMIN_PARSE_JS}),
+    pg_node("PG: admin tickets", [600, 1020], PG_ADMIN_TICKETS_SQL, ""),
+    node("Formater admin", "n8n-nodes-base.code", 2, [800, 1020],
+         {"jsCode": ADMIN_FORMAT_JS}),
+    node("HTTP: reponse admin", "n8n-nodes-base.httpRequest", 4.2, [1000, 1020], {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendMessage",
+        "sendBody": True,
+        "specifyBody": "json",
+        "jsonBody": '={{ JSON.stringify({ chat_id: $("Parser admin").item.json.chatId,'
+                    ' text: $json.reply, parse_mode: "HTML" }) }}',
+        "options": {"response": {"response": {"responseFormat": "json"}}},
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [
+            {"name": "Content-Type", "value": "application/json"}]}},
+        on_error="continueRegularOutput"),
 ]
 
 connections = merge_conn(
@@ -1132,6 +1307,11 @@ connections = merge_conn(
         # --- Reporting ---
         ("Webhook reporting", "PG: tickets en cours"),
         ("PG: tickets en cours", "Formater le rapport"),
+        # --- Bot Admin (@itmg_admin_bot) ---
+        ("Webhook Admin Bot", "Parser admin"),
+        ("Parser admin", "PG: admin tickets"),
+        ("PG: admin tickets", "Formater admin"),
+        ("Formater admin", "HTTP: reponse admin"),
     ]),
     conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
 )

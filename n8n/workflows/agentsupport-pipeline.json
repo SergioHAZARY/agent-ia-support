@@ -1160,6 +1160,114 @@
       "parameters": {
         "jsCode": "// Formate la reponse de la requete reporting pour le webhook.\nconst rows = $input.all().map(i => i.json);\nreturn [{ json: { count: rows.length, tickets: rows } }];"
       }
+    },
+    {
+      "name": "noteAdmin",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        940
+      ],
+      "parameters": {
+        "content": "## Bot Admin (@itmg_admin_bot)\nWebhook /admin-bot recoit les messages du bot admin.\nCommandes : /tickets, /stats, /recents, tickets par canal/priorite/departement.\nReponses groupees par categorie, canal, priorite ou societe.\nToken dans la variable n8n TELEGRAM_ADMIN_BOT_TOKEN.",
+        "height": 140,
+        "width": 520
+      }
+    },
+    {
+      "name": "Webhook Admin Bot",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        1020
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "admin-bot",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "name": "Parser admin",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        1020
+      ],
+      "parameters": {
+        "jsCode": "// Parse la commande admin du bot @itmg_admin_bot.\nconst j = $json;\nconst msg = j.message || j.channel_post || {};\nconst text = (msg.text || '').toLowerCase().trim();\nconst chatId = String((msg.chat || {}).id || '');\nconst chatType = (msg.chat || {}).type || 'private';\n\nlet cmd = 'tickets';\nlet groupBy = 'categorie';\n\nif (/^\\/(start)/.test(text)) cmd = 'start';\nelse if (/^\\/(help)|aide/.test(text)) cmd = 'help';\nelse if (/stats|statistiq/.test(text)) { cmd = 'stats'; }\nelse if (/recent|derniers?|24h|nouveau/.test(text)) { cmd = 'recents'; }\nelse if (/canal|canaux|plateforme|channel/.test(text)) groupBy = 'canal';\nelse if (/departement|societe|tenant|entite/.test(text)) groupBy = 'tenant';\nelse if (/priorite|urgence|p1|p2/.test(text)) groupBy = 'priorite';\nelse if (/ticket|demande|en.cours|ouvert/.test(text)) cmd = 'tickets';\n\nreturn [{ json: { cmd, groupBy, chatId, chatType, text } }];"
+      }
+    },
+    {
+      "name": "PG: admin tickets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        600,
+        1020
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT t.id::text, t.ref, t.title, t.category, t.subcategory, t.priority, t.status, t.autonomy_level, COALESCE(te.name, 'non attribue') as tenant_name, COALESCE(ch.platform, 'inconnu') as platform, to_char(t.created_at, 'DD/MM HH24:MI') as cree_le, t.created_at as cree_le_iso FROM tickets t LEFT JOIN tenants te ON te.id = t.tenant_id LEFT JOIN channels ch ON ch.id = t.channel_id WHERE t.status NOT IN ('clos', 'annule') ORDER BY t.created_at DESC LIMIT 50;",
+        "options": {
+          "queryReplacement": ""
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CqzEkT0Z7NlfszSN",
+          "name": "Postgres AgentSupport"
+        }
+      }
+    },
+    {
+      "name": "Formater admin",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        1020
+      ],
+      "parameters": {
+        "jsCode": "// Formate la reponse admin avec groupement par categorie/canal/priorite/tenant.\nconst cmdData = $('Parser admin').item.json;\nconst cmd = cmdData.cmd;\nconst groupBy = cmdData.groupBy;\nconst tickets = $input.all().map(i => i.json).filter(t => t.id);\n\nfunction esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\nconst prioIcon = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'};\n\nlet reply = '';\n\nif (cmd === 'start') {\n  reply = '🤖 <b>IT MG Admin Bot</b>\\n\\n'\n    + 'Je suis le bot administrateur. Je surveille tous les canaux en temps reel.\\n\\n'\n    + '<b>Commandes :</b>\\n'\n    + '/tickets — Tickets en cours (par categorie)\\n'\n    + '<i>tickets par canal</i> — Grouper par plateforme\\n'\n    + '<i>tickets par priorite</i> — Grouper par priorite\\n'\n    + '<i>tickets par departement</i> — Grouper par societe\\n'\n    + '/recents — Dernieres demandes (24h)\\n'\n    + '/stats — Statistiques globales\\n'\n    + '/help — Cette aide\\n\\n'\n    + '📡 Les notifications de nouveaux tickets arrivent automatiquement dans le groupe DEV MG.';\n  return [{ json: { reply } }];\n}\n\nif (cmd === 'help') {\n  reply = '📋 <b>Aide IT MG Admin</b>\\n\\n'\n    + '• <code>tickets</code> — tous les tickets en cours par categorie\\n'\n    + '• <code>tickets par canal</code> — groupes par plateforme (Telegram, Jira, email...)\\n'\n    + '• <code>tickets par priorite</code> — groupes par urgence\\n'\n    + '• <code>tickets par departement</code> — groupes par societe\\n'\n    + '• <code>recents</code> — tickets des dernieres 24h\\n'\n    + '• <code>stats</code> — comptages et repartition';\n  return [{ json: { reply } }];\n}\n\n// Filtrer les recents (created_at < 24h) cote JS\nlet filtered = tickets;\nif (cmd === 'recents') {\n  const cutoff = new Date(Date.now() - 24*3600*1000).toISOString();\n  filtered = tickets.filter(t => (t.cree_le_iso || t.created_at || '') > cutoff);\n}\n\nif (filtered.length === 0) {\n  reply = cmd === 'recents'\n    ? '✅ Aucune nouvelle demande dans les dernieres 24h.'\n    : '✅ Aucun ticket en cours. Tout est resolu !';\n  return [{ json: { reply } }];\n}\n\nif (cmd === 'stats') {\n  const byCat = {}, byPrio = {}, byPlatform = {}, byLevel = {};\n  for (const t of filtered) {\n    byCat[t.category||'autre'] = (byCat[t.category||'autre']||0) + 1;\n    byPrio[t.priority||'p4'] = (byPrio[t.priority||'p4']||0) + 1;\n    byPlatform[t.platform||'inconnu'] = (byPlatform[t.platform||'inconnu']||0) + 1;\n    byLevel[t.autonomy_level||'N0'] = (byLevel[t.autonomy_level||'N0']||0) + 1;\n  }\n  reply = '📊 <b>Statistiques</b> (' + filtered.length + ' tickets en cours)\\n\\n';\n  reply += '<b>Par categorie :</b>\\n';\n  for (const [k,v] of Object.entries(byCat).sort((a,b) => b[1]-a[1]))\n    reply += '  • ' + esc(k) + ' : ' + v + '\\n';\n  reply += '\\n<b>Par priorite :</b>\\n';\n  for (const k of ['p1','p2','p3','p4'])\n    if (byPrio[k]) reply += '  ' + (prioIcon[k]||'') + ' ' + k.toUpperCase() + ' : ' + byPrio[k] + '\\n';\n  reply += '\\n<b>Par canal :</b>\\n';\n  for (const [k,v] of Object.entries(byPlatform).sort((a,b) => b[1]-a[1]))\n    reply += '  • ' + esc(k) + ' : ' + v + '\\n';\n  reply += '\\n<b>Par niveau :</b>\\n';\n  for (const k of ['N0','N1','N2','N3'])\n    if (byLevel[k]) reply += '  • ' + k + ' : ' + byLevel[k] + '\\n';\n  return [{ json: { reply } }];\n}\n\n// Groupement standard\nconst groups = {};\nfor (const t of filtered) {\n  let key;\n  if (groupBy === 'canal') key = t.platform || 'inconnu';\n  else if (groupBy === 'tenant') key = t.tenant_name || 'non attribue';\n  else if (groupBy === 'priorite') key = t.priority || 'p4';\n  else key = t.category || 'autre';\n  if (!groups[key]) groups[key] = [];\n  groups[key].push(t);\n}\n\nconst label = cmd === 'recents' ? 'Demandes recentes (24h)' : 'Tickets en cours';\nreply = '📋 <b>' + label + '</b> (' + filtered.length + ') — par ' + esc(groupBy) + '\\n\\n';\n\nfor (const [group, items] of Object.entries(groups).sort((a,b) => a[0].localeCompare(b[0]))) {\n  reply += '📁 <b>' + esc(group.toUpperCase()) + '</b> (' + items.length + ')\\n';\n  for (const t of items.slice(0, 8)) {\n    const p = prioIcon[t.priority] || '⚪';\n    reply += '  ' + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '\n      + esc((t.title||'').slice(0,50)) + '\\n'\n      + '    ' + esc(t.autonomy_level||'') + ' | ' + esc(t.status||'')\n      + (t.tenant_name && t.tenant_name !== 'non attribue' ? ' | ' + esc(t.tenant_name) : '')\n      + (t.platform ? ' | ' + esc(t.platform) : '') + '\\n';\n  }\n  if (items.length > 8) reply += '  <i>... et ' + (items.length - 8) + ' autres</i>\\n';\n  reply += '\\n';\n}\n\nreturn [{ json: { reply } }];"
+      }
+    },
+    {
+      "name": "HTTP: reponse admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        1020
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $(\"Parser admin\").item.json.chatId, text: $json.reply, parse_mode: \"HTML\" }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -1767,6 +1875,50 @@
         [
           {
             "node": "Formater le rapport",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Admin Bot": {
+      "main": [
+        [
+          {
+            "node": "Parser admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parser admin": {
+      "main": [
+        [
+          {
+            "node": "PG: admin tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG: admin tickets": {
+      "main": [
+        [
+          {
+            "node": "Formater admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formater admin": {
+      "main": [
+        [
+          {
+            "node": "HTTP: reponse admin",
             "type": "main",
             "index": 0
           }
