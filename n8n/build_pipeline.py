@@ -648,225 +648,249 @@ return [{ json: { notif_text: msg } }];
 
 ADMIN_PARSE_JS = r"""
 // Parse la commande admin du bot @itmg_admin_bot.
+// Detection independante : cmd, groupBy et statusFilter sont analyses separement.
 const j = $json;
 const msg = j.message || j.channel_post || {};
 const text = (msg.text || '').toLowerCase().trim();
 const chatId = String((msg.chat || {}).id || '');
 const chatType = (msg.chat || {}).type || 'private';
 
+// 1. Commande principale
 let cmd = 'tickets';
+if (/^\/(start)\b/.test(text)) cmd = 'start';
+else if (/^\/help\b|^aide\b/.test(text)) cmd = 'help';
+else if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';
+else if (/\/stats\b|statistiq/i.test(text)) cmd = 'stats';
+else if (/\/recents?\b|derniers?\b|24h/i.test(text)) cmd = 'recents';
+
+// 2. Groupement (detecte independamment de la commande)
 let groupBy = 'categorie';
+if (/\b(par\s+)?(canal|canaux|plateforme|channel)\b/i.test(text)) groupBy = 'canal';
+else if (/\b(par\s+)?(departement|societe|tenant|entite)\b/i.test(text)) groupBy = 'tenant';
+else if (/\b(par\s+)?(priorite|urgence)\b/i.test(text)) groupBy = 'priorite';
+else if (/\b(par\s+)?(statut|status|etat)\b/i.test(text)) groupBy = 'statut';
+
+// 3. Filtre par statut (detecte independamment)
 let statusFilter = '';
-
-if (/^\/(start)/.test(text)) cmd = 'start';
-else if (/^\/(help)|aide/.test(text)) cmd = 'help';
-else if (/rapport|report|bilan|synthes/.test(text)) { cmd = 'rapport'; }
-else if (/stats|statistiq/.test(text)) { cmd = 'stats'; }
-else if (/recent|derniers?|24h|nouveau/.test(text)) { cmd = 'recents'; }
-else if (/canal|canaux|plateforme|channel/.test(text)) groupBy = 'canal';
-else if (/departement|societe|tenant|entite/.test(text)) groupBy = 'tenant';
-else if (/priorite|urgence|p1|p2/.test(text)) groupBy = 'priorite';
-else if (/ticket|demande|en.cours|ouvert/.test(text)) cmd = 'tickets';
-
-if (/\b(ouverts?|open)\b/.test(text)) statusFilter = 'ouvert';
-else if (/\b(en.cours|in.progress|traitement)\b/.test(text)) statusFilter = 'en_cours';
-else if (/\b(fini|termin|clos|closed|ferm|resolu|resolved)\b/.test(text)) statusFilter = 'clos';
+if (/\b(ouverts?|open|nouveau)\b/i.test(text)) statusFilter = 'ouvert';
+else if (/\ben[\s._-]?cours\b|in[\s._-]?progress|traitement/i.test(text)) statusFilter = 'en_cours';
+else if (/\b(fini|termin|clos|closed?|ferm|resolu|resolved|complet)\b/i.test(text)) statusFilter = 'clos';
 
 return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter } }];
 """.strip()
 
 ADMIN_FORMAT_JS = r"""
-// Formate la reponse admin avec groupement par categorie/canal/priorite/tenant.
+// Formate la reponse admin — groupement par categorie/canal/priorite/tenant/statut.
+// chatId est transmis dans la sortie pour le noeud HTTP qui suit.
 const cmdData = $('Parser admin').first().json;
 const cmd = cmdData.cmd;
 const groupBy = cmdData.groupBy;
 const chatId = cmdData.chatId;
-const tickets = $input.all().map(i => i.json).filter(t => t.id);
+const statusFilter = cmdData.statusFilter || '';
+const allTickets = $input.all().map(i => i.json).filter(t => t.id);
 
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 const prioIcon = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'};
-
-let reply = '';
-
-if (cmd === 'start') {
-  reply = '🤖 <b>IT MG Admin Bot</b>\n\n'
-    + 'Je suis le bot administrateur. Je surveille tous les canaux en temps reel.\n\n'
-    + '<b>Commandes :</b>\n'
-    + '/tickets — Tickets en cours (par categorie)\n'
-    + '<i>tickets par canal</i> — Grouper par plateforme\n'
-    + '<i>tickets par priorite</i> — Grouper par priorite\n'
-    + '<i>tickets par departement</i> — Grouper par societe\n'
-    + '/rapport — Rapport complet par statut (tous canaux)\n'
-    + '/recents — Dernieres demandes (24h)\n'
-    + '/stats — Statistiques globales\n'
-    + '/help — Cette aide\n\n'
-    + '📡 Les notifications de nouveaux tickets arrivent automatiquement dans le groupe DEV MG.';
-  return [{ json: { reply, chatId } }];
-}
-
-if (cmd === 'help') {
-  reply = '📋 <b>Aide IT MG Admin</b>\n\n'
-    + '• <code>tickets</code> — tous les tickets en cours par categorie\n'
-    + '• <code>tickets par canal</code> — groupes par plateforme (Telegram, Jira, email...)\n'
-    + '• <code>tickets par priorite</code> — groupes par urgence\n'
-    + '• <code>tickets par departement</code> — groupes par societe\n'
-    + '• <code>rapport</code> — rapport complet par statut (tous canaux)\n'
-    + '• <code>rapport ouverts</code> — uniquement les tickets ouverts\n'
-    + '• <code>rapport en cours</code> — uniquement les tickets en traitement\n'
-    + '• <code>rapport clos</code> — uniquement les tickets termines\n'
-    + '• <code>recents</code> — tickets des dernieres 24h\n'
-    + '• <code>stats</code> — comptages et repartition';
-  return [{ json: { reply, chatId } }];
-}
-
-const statusFilter = cmdData.statusFilter || '';
 const statusMap = {
   'ouvert': ['ouvert','open','nouveau','new'],
   'en_cours': ['en_cours','in_progress','en cours','attente','pending','escalade'],
   'clos': ['clos','closed','resolu','resolved','termine','done','annule','cancelled']
 };
-
 function matchStatus(s, filter) {
   if (!filter) return true;
   const ls = String(s||'').toLowerCase();
   return (statusMap[filter]||[]).some(k => ls.includes(k) || ls === k);
 }
-
-const statusLabel = {'ouvert':'🟢 Ouverts','en_cours':'🔵 En cours','clos':'✅ Clos/Termines'};
+function isOpen(s) { return !matchStatus(s, 'clos'); }
 const statusIcon = s => {
   const ls = String(s||'').toLowerCase();
   if (statusMap.clos.some(k => ls.includes(k))) return '✅';
   if (statusMap.en_cours.some(k => ls.includes(k))) return '🔵';
   return '🟢';
 };
+const statusLabel = {'ouvert':'🟢 Ouverts','en_cours':'🔵 En cours','clos':'✅ Clos/Termines'};
 
-// Commande /rapport : rapport complet par statut, canal, categorie
-if (cmd === 'rapport') {
-  let pool = tickets;
-  if (statusFilter) pool = tickets.filter(t => matchStatus(t.status, statusFilter));
+let reply = '';
 
-  if (pool.length === 0) {
-    reply = '📭 Aucun ticket' + (statusFilter ? ' avec le statut "' + esc(statusFilter) + '"' : '') + '.';
-    return [{ json: { reply, chatId } }];
-  }
-
-  const title = statusFilter
-    ? '📊 <b>Rapport — ' + esc(statusLabel[statusFilter] || statusFilter) + '</b>'
-    : '📊 <b>Rapport complet — tous statuts</b>';
-
-  // Compteurs globaux par statut
-  const byStatus = {};
-  for (const t of pool) {
-    const s = t.status || 'inconnu';
-    byStatus[s] = (byStatus[s]||0) + 1;
-  }
-
-  reply = title + ' (' + pool.length + ' tickets)\n\n';
-
-  if (!statusFilter) {
-    reply += '<b>Repartition par statut :</b>\n';
-    for (const [s,n] of Object.entries(byStatus).sort((a,b) => b[1]-a[1]))
-      reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\n';
-    reply += '\n';
-  }
-
-  // Par canal
-  const byPlatform = {};
-  for (const t of pool) {
-    const p = t.platform || 'inconnu';
-    if (!byPlatform[p]) byPlatform[p] = [];
-    byPlatform[p].push(t);
-  }
-  reply += '<b>Par canal :</b>\n';
-  for (const [plat, items] of Object.entries(byPlatform).sort((a,b) => b[1].length - a[1].length)) {
-    reply += '\n📡 <b>' + esc(plat.toUpperCase()) + '</b> (' + items.length + ')\n';
-    for (const t of items.slice(0, 5)) {
-      const p = prioIcon[t.priority] || '⚪';
-      reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '
-        + esc((t.title||'').slice(0,45)) + '\n'
-        + '    ' + esc(t.status||'') + ' | ' + esc(t.category||'') + ' | '
-        + esc(t.tenant_name||'') + ' | ' + esc(t.cree_le||'') + '\n';
-    }
-    if (items.length > 5) reply += '  <i>... et ' + (items.length - 5) + ' autres</i>\n';
-  }
-
-  // Par categorie
-  const byCat = {};
-  for (const t of pool) {
-    const c = t.category || 'autre';
-    byCat[c] = (byCat[c]||0) + 1;
-  }
-  reply += '\n<b>Par categorie :</b>\n';
-  for (const [c,n] of Object.entries(byCat).sort((a,b) => b[1]-a[1]))
-    reply += '  • ' + esc(c) + ' : ' + n + '\n';
-
+// --- /start ---
+if (cmd === 'start') {
+  reply = '🤖 <b>IT MG Admin Bot</b>\n\n'
+    + 'Bot administrateur — surveillance temps reel de tous les canaux.\n\n'
+    + '<b>Commandes :</b>\n'
+    + '/tickets — Tous les tickets en cours\n'
+    + '<i>tickets par canal</i> — Grouper par plateforme\n'
+    + '<i>tickets par departement</i> — Grouper par societe\n'
+    + '<i>tickets par priorite</i> — Grouper par urgence\n'
+    + '<i>tickets par statut</i> — Grouper par statut\n'
+    + '<i>tickets en cours</i> — Filtrer par statut\n'
+    + '/rapport — Rapport complet tous statuts, tous canaux\n'
+    + '/stats — Statistiques globales\n'
+    + '/recents — Dernieres 24h\n'
+    + '/help — Aide\n\n'
+    + '📡 Canaux surveilles : Telegram, Teams, Google Chat, Email, Jira, ClickUp, Confluence\n'
+    + '🔔 Notifications automatiques dans le groupe DEV MG.';
   return [{ json: { reply, chatId } }];
 }
 
-// Filtrer les recents (created_at < 24h) cote JS
-let filtered = tickets.filter(t => !matchStatus(t.status, 'clos'));
-if (cmd === 'recents') {
+// --- /help ---
+if (cmd === 'help') {
+  reply = '📋 <b>Aide IT MG Admin</b>\n\n'
+    + '<b>Affichage :</b>\n'
+    + '• <code>tickets</code> — en cours, par categorie\n'
+    + '• <code>tickets par canal</code> — par plateforme (Telegram, Jira, email...)\n'
+    + '• <code>tickets par departement</code> — par societe\n'
+    + '• <code>tickets par priorite</code> — par urgence\n'
+    + '• <code>tickets par statut</code> — par etat (ouvert, en cours, clos)\n\n'
+    + '<b>Filtres :</b>\n'
+    + '• <code>tickets ouverts</code> — uniquement ouverts\n'
+    + '• <code>tickets en cours</code> — uniquement en traitement\n'
+    + '• <code>tickets clos</code> — uniquement termines\n'
+    + '• <code>tickets en cours par canal</code> — filtre + groupement\n\n'
+    + '<b>Rapports :</b>\n'
+    + '• <code>rapport</code> — tous statuts, tous canaux\n'
+    + '• <code>rapport ouverts</code> / <code>rapport clos</code>\n'
+    + '• <code>stats</code> — comptages globaux\n'
+    + '• <code>recents</code> — dernieres 24h';
+  return [{ json: { reply, chatId } }];
+}
+
+// --- Filtrage commun : statusFilter s'applique a TOUTES les commandes ---
+let pool = allTickets;
+if (statusFilter) {
+  pool = allTickets.filter(t => matchStatus(t.status, statusFilter));
+} else if (cmd === 'tickets') {
+  pool = allTickets.filter(t => isOpen(t.status));
+} else if (cmd === 'recents') {
   const cutoff = new Date(Date.now() - 24*3600*1000).toISOString();
-  filtered = tickets.filter(t => (t.cree_le_iso || t.created_at || '') > cutoff);
+  pool = allTickets.filter(t => (t.cree_le_iso || '') > cutoff);
 }
 
-if (filtered.length === 0) {
-  reply = cmd === 'recents'
-    ? '✅ Aucune nouvelle demande dans les dernieres 24h.'
-    : '✅ Aucun ticket en cours. Tout est resolu !';
+if (pool.length === 0) {
+  if (cmd === 'recents') reply = '✅ Aucune nouvelle demande dans les dernieres 24h.';
+  else if (statusFilter) reply = '📭 Aucun ticket avec le statut "' + esc(statusFilter) + '".';
+  else reply = '✅ Aucun ticket en cours. Tout est resolu !';
   return [{ json: { reply, chatId } }];
 }
 
+// --- /stats ---
 if (cmd === 'stats') {
-  const byCat = {}, byPrio = {}, byPlatform = {}, byLevel = {};
-  for (const t of filtered) {
+  const byCat = {}, byPrio = {}, byPlat = {}, byLevel = {}, byStat = {};
+  for (const t of pool) {
     byCat[t.category||'autre'] = (byCat[t.category||'autre']||0) + 1;
     byPrio[t.priority||'p4'] = (byPrio[t.priority||'p4']||0) + 1;
-    byPlatform[t.platform||'inconnu'] = (byPlatform[t.platform||'inconnu']||0) + 1;
+    byPlat[t.platform||'inconnu'] = (byPlat[t.platform||'inconnu']||0) + 1;
     byLevel[t.autonomy_level||'N0'] = (byLevel[t.autonomy_level||'N0']||0) + 1;
+    byStat[t.status||'inconnu'] = (byStat[t.status||'inconnu']||0) + 1;
   }
-  reply = '📊 <b>Statistiques</b> (' + filtered.length + ' tickets en cours)\n\n';
-  reply += '<b>Par categorie :</b>\n';
-  for (const [k,v] of Object.entries(byCat).sort((a,b) => b[1]-a[1]))
+  const label = statusFilter ? statusLabel[statusFilter]||statusFilter : 'en cours';
+  reply = '📊 <b>Statistiques</b> (' + pool.length + ' tickets ' + esc(label) + ')\n\n';
+  reply += '<b>Par statut :</b>\n';
+  for (const [s,n] of Object.entries(byStat).sort((a,b)=>b[1]-a[1]))
+    reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\n';
+  reply += '\n<b>Par categorie :</b>\n';
+  for (const [k,v] of Object.entries(byCat).sort((a,b)=>b[1]-a[1]))
     reply += '  • ' + esc(k) + ' : ' + v + '\n';
+  reply += '\n<b>Par canal :</b>\n';
+  for (const [k,v] of Object.entries(byPlat).sort((a,b)=>b[1]-a[1]))
+    reply += '  📡 ' + esc(k) + ' : ' + v + '\n';
   reply += '\n<b>Par priorite :</b>\n';
   for (const k of ['p1','p2','p3','p4'])
     if (byPrio[k]) reply += '  ' + (prioIcon[k]||'') + ' ' + k.toUpperCase() + ' : ' + byPrio[k] + '\n';
-  reply += '\n<b>Par canal :</b>\n';
-  for (const [k,v] of Object.entries(byPlatform).sort((a,b) => b[1]-a[1]))
-    reply += '  • ' + esc(k) + ' : ' + v + '\n';
   reply += '\n<b>Par niveau :</b>\n';
   for (const k of ['N0','N1','N2','N3'])
     if (byLevel[k]) reply += '  • ' + k + ' : ' + byLevel[k] + '\n';
   return [{ json: { reply, chatId } }];
 }
 
-// Groupement standard
-const groups = {};
-for (const t of filtered) {
-  let key;
-  if (groupBy === 'canal') key = t.platform || 'inconnu';
-  else if (groupBy === 'tenant') key = t.tenant_name || 'non attribue';
-  else if (groupBy === 'priorite') key = t.priority || 'p4';
-  else key = t.category || 'autre';
-  if (!groups[key]) groups[key] = [];
-  groups[key].push(t);
+// --- /rapport : vue complete par statut puis par canal ---
+if (cmd === 'rapport') {
+  const title = statusFilter
+    ? '📊 <b>Rapport — ' + esc(statusLabel[statusFilter]||statusFilter) + '</b>'
+    : '📊 <b>Rapport complet — tous statuts, tous canaux</b>';
+  reply = title + ' (' + pool.length + ' tickets)\n\n';
+
+  if (!statusFilter) {
+    const byStat = {};
+    for (const t of pool) { const s = t.status||'inconnu'; byStat[s]=(byStat[s]||0)+1; }
+    reply += '<b>Repartition par statut :</b>\n';
+    for (const [s,n] of Object.entries(byStat).sort((a,b)=>b[1]-a[1]))
+      reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\n';
+    reply += '\n';
+  }
+
+  const byPlat = {};
+  for (const t of pool) { const p=t.platform||'inconnu'; if(!byPlat[p]) byPlat[p]=[]; byPlat[p].push(t); }
+  reply += '<b>Par canal :</b>\n';
+  for (const [plat,items] of Object.entries(byPlat).sort((a,b)=>b[1].length-a[1].length)) {
+    reply += '\n📡 <b>' + esc(plat.toUpperCase()) + '</b> (' + items.length + ')\n';
+    for (const t of items.slice(0,5)) {
+      const p = prioIcon[t.priority]||'⚪';
+      reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref||(t.id||'').slice(0,8)) + '</b> — '
+        + esc((t.title||'').slice(0,45)) + '\n    '
+        + esc(t.status||'') + ' | ' + esc(t.category||'')
+        + (t.tenant_name && t.tenant_name!=='non attribue' ? ' | '+esc(t.tenant_name) : '')
+        + ' | ' + esc(t.cree_le||'') + '\n';
+    }
+    if (items.length>5) reply += '  <i>... et '+(items.length-5)+' autres</i>\n';
+  }
+
+  const byCat = {};
+  for (const t of pool) { const c=t.category||'autre'; byCat[c]=(byCat[c]||0)+1; }
+  reply += '\n<b>Par categorie :</b>\n';
+  for (const [c,n] of Object.entries(byCat).sort((a,b)=>b[1]-a[1]))
+    reply += '  • ' + esc(c) + ' : ' + n + '\n';
+
+  return [{ json: { reply, chatId } }];
 }
 
-const label = cmd === 'recents' ? 'Demandes recentes (24h)' : 'Tickets en cours';
-reply = '📋 <b>' + label + '</b> (' + filtered.length + ') — par ' + esc(groupBy) + '\n\n';
+// --- /tickets et /recents : groupement configurable ---
+// Fonction de groupement par cle
+function groupKey(t) {
+  if (groupBy === 'canal') return t.platform || 'inconnu';
+  if (groupBy === 'tenant') return t.tenant_name || 'non attribue';
+  if (groupBy === 'priorite') return t.priority || 'p4';
+  if (groupBy === 'statut') return t.status || 'inconnu';
+  return t.category || 'autre';
+}
 
-for (const [group, items] of Object.entries(groups).sort((a,b) => a[0].localeCompare(b[0]))) {
-  reply += '📁 <b>' + esc(group.toUpperCase()) + '</b> (' + items.length + ')\n';
-  for (const t of items.slice(0, 8)) {
+const groups = {};
+for (const t of pool) {
+  const k = groupKey(t);
+  if (!groups[k]) groups[k] = [];
+  groups[k].push(t);
+}
+
+const groupIcon = {
+  'canal': '📡', 'tenant': '🏢', 'priorite': '🎯',
+  'statut': '📋', 'categorie': '📁'
+};
+const icon = groupIcon[groupBy] || '📁';
+
+let label = cmd === 'recents' ? 'Demandes recentes (24h)' : 'Tickets';
+if (statusFilter) label += ' ' + (statusLabel[statusFilter]||statusFilter).replace(/[^ ]+\s*/, '');
+else if (cmd === 'tickets') label += ' en cours';
+reply = '📋 <b>' + label + '</b> (' + pool.length + ') — par ' + esc(groupBy) + '\n\n';
+
+const sortedGroups = Object.entries(groups).sort((a,b) => {
+  if (groupBy === 'priorite') return a[0].localeCompare(b[0]);
+  return b[1].length - a[1].length;
+});
+
+for (const [group, items] of sortedGroups) {
+  const gIcon = groupBy === 'priorite' ? (prioIcon[group]||'⚪')
+    : groupBy === 'statut' ? statusIcon(group) : icon;
+  reply += gIcon + ' <b>' + esc(group.toUpperCase()) + '</b> (' + items.length + ')\n';
+  for (const t of items.slice(0, 6)) {
     const p = prioIcon[t.priority] || '⚪';
-    reply += '  ' + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '
-      + esc((t.title||'').slice(0,50)) + '\n'
-      + '    ' + esc(t.autonomy_level||'') + ' | ' + esc(t.status||'')
-      + (t.tenant_name && t.tenant_name !== 'non attribue' ? ' | ' + esc(t.tenant_name) : '')
-      + (t.platform ? ' | ' + esc(t.platform) : '') + '\n';
+    reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '
+      + esc((t.title||'').slice(0,50)) + '\n    '
+      + esc(t.autonomy_level||'') + ' | ' + esc(t.status||'')
+      + (groupBy !== 'tenant' && t.tenant_name && t.tenant_name !== 'non attribue' ? ' | ' + esc(t.tenant_name) : '')
+      + (groupBy !== 'canal' && t.platform ? ' | ' + esc(t.platform) : '')
+      + (groupBy !== 'categorie' ? ' | ' + esc(t.category||'') : '')
+      + ' | ' + esc(t.cree_le||'') + '\n';
   }
-  if (items.length > 8) reply += '  <i>... et ' + (items.length - 8) + ' autres</i>\n';
+  if (items.length > 6) reply += '  <i>... et ' + (items.length - 6) + ' autres</i>\n';
   reply += '\n';
 }
 
