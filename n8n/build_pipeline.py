@@ -35,13 +35,16 @@ def system_prompt():
     return t[s:e].strip()
 
 
-def node(name, ntype, ver, pos, params=None, creds=None, disabled=False):
+def node(name, ntype, ver, pos, params=None, creds=None, disabled=False,
+         on_error=None):
     n = {"name": name, "type": ntype, "typeVersion": ver, "position": pos,
          "parameters": params or {}}
     if creds:
         n["credentials"] = creds
     if disabled:
         n["disabled"] = True
+    if on_error:
+        n["onError"] = on_error
     return n
 
 
@@ -503,17 +506,22 @@ CLICKUP_ALERT_JS = r"""
 // Construit le message d'alerte pour le groupe Telegram DEV MG apres creation ClickUp.
 const esc = $('Preparer escalade N3').item.json;
 const cuResp = $json;
+const cuError = cuResp.err || cuResp.error || '';
 const taskId = cuResp.id || '';
-const taskUrl = cuResp.url || ('https://app.clickup.com/t/' + taskId);
+const taskUrl = taskId ? (cuResp.url || ('https://app.clickup.com/t/' + taskId)) : '';
 
-const msg = '⚠️ *ESCALADE AGENT IA*\n\n'
+let msg = '⚠️ *ESCALADE AGENT IA*\n\n'
   + '🆔 *Ticket:* ' + esc.ticketRef + '\n'
   + '👤 *Demandeur:* ' + esc.sender_raw + '\n'
   + '📁 *Categorie:* ' + esc.category + '\n'
   + '🚨 *Priorite:* ' + esc.priority + '\n\n'
-  + '📝 *Resume:* ' + esc.summary.slice(0, 300) + '\n\n'
-  + '❗ *Raison:* ' + esc.escalation_reason + '\n\n'
-  + '🔗 *Tache ClickUp:* ' + taskUrl;
+  + '📝 *Resume:* ' + (esc.summary || '').slice(0, 300) + '\n\n'
+  + '❗ *Raison:* ' + esc.escalation_reason;
+if (taskUrl) {
+  msg += '\n\n🔗 *Tache ClickUp:* ' + taskUrl;
+} else if (cuError) {
+  msg += '\n\n⚠️ *ClickUp indisponible* : ' + String(cuError).slice(0, 200);
+}
 
 return [{ json: { alert_text: msg, task_url: taskUrl, task_id: taskId } }];
 """.strip()
@@ -837,7 +845,7 @@ nodes = [
          {"jsCode": PREPARE_ESCALADE_JS}),
     node("ClickUp: creer tache", "n8n-nodes-base.httpRequest", 4.2, [2500, 540], {
         "method": "POST",
-        "url": "https://api.clickup.com/api/v2/list/{{ $vars.CLICKUP_LIST_ID || '901222267724' }}/task",
+        "url": "=https://api.clickup.com/api/v2/list/{{ $vars.CLICKUP_LIST_ID || '901222267724' }}/task",
         "sendHeaders": True,
         "headerParameters": {"parameters": [
             {"name": "Authorization", "value": "={{ $vars.CLICKUP_API_TOKEN }}"},
@@ -845,7 +853,8 @@ nodes = [
         "sendBody": True,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.clickup_payload) }}",
-        "options": {"response": {"response": {"responseFormat": "json"}}}}),
+        "options": {"response": {"response": {"responseFormat": "json"}}}},
+        on_error="continueRegularOutput"),
     node("Preparer alerte DEV MG", "n8n-nodes-base.code", 2, [2740, 540],
          {"jsCode": CLICKUP_ALERT_JS}),
     node("Telegram: alerter techniciens", "n8n-nodes-base.telegram", 1.2, [2980, 540], {
@@ -853,7 +862,8 @@ nodes = [
         "chatId": "={{ $vars.TELEGRAM_DEVMG_CHAT_ID || '-5219441607' }}",
         "text": "={{ $json.alert_text }}",
         "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False}},
-        creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
+        creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None),
+        on_error="continueRegularOutput"),
 
     # --- Reponse + Livraison multi-canal unifiee ---
     node("Preparer reponse", "n8n-nodes-base.code", 2, [2600, 300], {"jsCode": PREPARE_REPLY_TICKET_JS}),

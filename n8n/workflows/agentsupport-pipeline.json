@@ -611,7 +611,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "https://api.clickup.com/api/v2/list/{{ $vars.CLICKUP_LIST_ID || '901222267724' }}/task",
+        "url": "=https://api.clickup.com/api/v2/list/{{ $vars.CLICKUP_LIST_ID || '901222267724' }}/task",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -635,7 +635,8 @@
             }
           }
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "name": "Preparer alerte DEV MG",
@@ -646,7 +647,7 @@
         540
       ],
       "parameters": {
-        "jsCode": "// Construit le message d'alerte pour le groupe Telegram DEV MG apres creation ClickUp.\nconst esc = $('Preparer escalade N3').item.json;\nconst cuResp = $json;\nconst taskId = cuResp.id || '';\nconst taskUrl = cuResp.url || ('https://app.clickup.com/t/' + taskId);\n\nconst msg = '⚠️ *ESCALADE AGENT IA*\\n\\n'\n  + '🆔 *Ticket:* ' + esc.ticketRef + '\\n'\n  + '👤 *Demandeur:* ' + esc.sender_raw + '\\n'\n  + '📁 *Categorie:* ' + esc.category + '\\n'\n  + '🚨 *Priorite:* ' + esc.priority + '\\n\\n'\n  + '📝 *Resume:* ' + esc.summary.slice(0, 300) + '\\n\\n'\n  + '❗ *Raison:* ' + esc.escalation_reason + '\\n\\n'\n  + '🔗 *Tache ClickUp:* ' + taskUrl;\n\nreturn [{ json: { alert_text: msg, task_url: taskUrl, task_id: taskId } }];"
+        "jsCode": "// Construit le message d'alerte pour le groupe Telegram DEV MG apres creation ClickUp.\nconst esc = $('Preparer escalade N3').item.json;\nconst cuResp = $json;\nconst cuError = cuResp.err || cuResp.error || '';\nconst taskId = cuResp.id || '';\nconst taskUrl = taskId ? (cuResp.url || ('https://app.clickup.com/t/' + taskId)) : '';\n\nlet msg = '⚠️ *ESCALADE AGENT IA*\\n\\n'\n  + '🆔 *Ticket:* ' + esc.ticketRef + '\\n'\n  + '👤 *Demandeur:* ' + esc.sender_raw + '\\n'\n  + '📁 *Categorie:* ' + esc.category + '\\n'\n  + '🚨 *Priorite:* ' + esc.priority + '\\n\\n'\n  + '📝 *Resume:* ' + (esc.summary || '').slice(0, 300) + '\\n\\n'\n  + '❗ *Raison:* ' + esc.escalation_reason;\nif (taskUrl) {\n  msg += '\\n\\n🔗 *Tache ClickUp:* ' + taskUrl;\n} else if (cuError) {\n  msg += '\\n\\n⚠️ *ClickUp indisponible* : ' + String(cuError).slice(0, 200);\n}\n\nreturn [{ json: { alert_text: msg, task_url: taskUrl, task_id: taskId } }];"
       }
     },
     {
@@ -671,7 +672,8 @@
           "id": "t0Qk3TiKck5eaRQ4",
           "name": "Telegram Agent Support"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "name": "Preparer reponse",
