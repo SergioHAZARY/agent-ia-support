@@ -83,28 +83,45 @@ def merge_conn(*cs):
 # Code des noeuds
 # --------------------------------------------------------------------------- #
 FILTER_TELEGRAM_JS = r"""
-// Filtre Telegram : traiter tout message textuel (DM ou groupe de support).
-// Ignorer uniquement les updates sans contenu exploitable (sticker seul,
-// entree/sortie de membre, etc.). Le triage Claude decidera si c'est pertinent.
+// Filtre Telegram :
+//  - DM (private) -> toujours traiter
+//  - Groupe/supergroupe -> seulement si @itmg_support_bot mentionne ou reply au bot
 const j = $json;
 const t = j.message || j.channel_post || {};
 const chat = t.chat || {};
+const chatType = chat.type || '';
+const text = (t.text || t.caption || '').toLowerCase();
 const BOT_USERNAME = 'itmg_support_bot';
 
-// Ignorer les updates sans message exploitable
+// Ignorer les updates sans contenu exploitable
 if (!t.text && !t.caption && !t.photo && !t.document && !t.voice) {
   return [];
 }
 
-// Nettoyer @mention si presente (pour ne garder que la question)
-if (t.text) {
-  t.text = t.text.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
-}
-if (t.caption) {
-  t.caption = t.caption.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
+// DM -> toujours repondre
+if (chatType === 'private') {
+  return [{ json: j }];
 }
 
-return [{ json: Object.assign({}, j, { message: t }) }];
+// Groupe : verifier @mention ou reply au bot
+const mentionInText = text.includes('@' + BOT_USERNAME);
+const entities = t.entities || t.caption_entities || [];
+const mentionInEntities = entities.some(e => {
+  if (e.type === 'mention') {
+    const m = (t.text || t.caption || '').substring(e.offset, e.offset + e.length).toLowerCase();
+    return m === '@' + BOT_USERNAME;
+  }
+  return false;
+});
+const replyToBot = (t.reply_to_message || {}).from && (t.reply_to_message.from.is_bot === true);
+
+if (mentionInText || mentionInEntities || replyToBot) {
+  if (t.text) t.text = t.text.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
+  if (t.caption) t.caption = t.caption.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
+  return [{ json: Object.assign({}, j, { message: t }) }];
+}
+
+return [];
 """.strip()
 
 NORMALIZE_JS = r"""
@@ -712,10 +729,15 @@ nodes = [
     node("A une image ?", "n8n-nodes-base.if", 2.3, [460, 240], {
         "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
                        "combinator": "and",
-                       "conditions": [{"id": "img1",
-                                       "leftValue": "={{ $json._photo_file_id }}",
-                                       "rightValue": "",
-                                       "operator": {"type": "string", "operation": "notEquals"}}]},
+                       "conditions": [
+                           {"id": "img1",
+                            "leftValue": "={{ $json._photo_file_id }}",
+                            "rightValue": "",
+                            "operator": {"type": "string", "operation": "notEquals"}},
+                           {"id": "tok1",
+                            "leftValue": "={{ $vars.TELEGRAM_BOT_TOKEN }}",
+                            "rightValue": "",
+                            "operator": {"type": "string", "operation": "notEquals"}}]},
         "options": {}}),
     # Branche image : telecharger via Telegram API
     node("TG: getFile", "n8n-nodes-base.httpRequest", 4.2, [640, 120], {

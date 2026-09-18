@@ -83,7 +83,7 @@
         60
       ],
       "parameters": {
-        "jsCode": "// Filtre Telegram : traiter tout message textuel (DM ou groupe de support).\n// Ignorer uniquement les updates sans contenu exploitable (sticker seul,\n// entree/sortie de membre, etc.). Le triage Claude decidera si c'est pertinent.\nconst j = $json;\nconst t = j.message || j.channel_post || {};\nconst chat = t.chat || {};\nconst BOT_USERNAME = 'itmg_support_bot';\n\n// Ignorer les updates sans message exploitable\nif (!t.text && !t.caption && !t.photo && !t.document && !t.voice) {\n  return [];\n}\n\n// Nettoyer @mention si presente (pour ne garder que la question)\nif (t.text) {\n  t.text = t.text.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();\n}\nif (t.caption) {\n  t.caption = t.caption.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();\n}\n\nreturn [{ json: Object.assign({}, j, { message: t }) }];"
+        "jsCode": "// Filtre Telegram :\n//  - DM (private) -> toujours traiter\n//  - Groupe/supergroupe -> seulement si @itmg_support_bot mentionne ou reply au bot\nconst j = $json;\nconst t = j.message || j.channel_post || {};\nconst chat = t.chat || {};\nconst chatType = chat.type || '';\nconst text = (t.text || t.caption || '').toLowerCase();\nconst BOT_USERNAME = 'itmg_support_bot';\n\n// Ignorer les updates sans contenu exploitable\nif (!t.text && !t.caption && !t.photo && !t.document && !t.voice) {\n  return [];\n}\n\n// DM -> toujours repondre\nif (chatType === 'private') {\n  return [{ json: j }];\n}\n\n// Groupe : verifier @mention ou reply au bot\nconst mentionInText = text.includes('@' + BOT_USERNAME);\nconst entities = t.entities || t.caption_entities || [];\nconst mentionInEntities = entities.some(e => {\n  if (e.type === 'mention') {\n    const m = (t.text || t.caption || '').substring(e.offset, e.offset + e.length).toLowerCase();\n    return m === '@' + BOT_USERNAME;\n  }\n  return false;\n});\nconst replyToBot = (t.reply_to_message || {}).from && (t.reply_to_message.from.is_bot === true);\n\nif (mentionInText || mentionInEntities || replyToBot) {\n  if (t.text) t.text = t.text.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();\n  if (t.caption) t.caption = t.caption.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();\n  return [{ json: Object.assign({}, j, { message: t }) }];\n}\n\nreturn [];"
       }
     },
     {
@@ -117,6 +117,15 @@
             {
               "id": "img1",
               "leftValue": "={{ $json._photo_file_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "tok1",
+              "leftValue": "={{ $vars.TELEGRAM_BOT_TOKEN }}",
               "rightValue": "",
               "operator": {
                 "type": "string",
