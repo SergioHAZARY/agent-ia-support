@@ -1176,7 +1176,7 @@
       }
     },
     {
-      "name": "TelegramTrigger Admin",
+      "name": "AdminTrigger",
       "type": "n8n-nodes-base.telegramTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -1188,6 +1188,12 @@
           "message"
         ],
         "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "UUtQ87d90hmvHbDn",
+          "name": "Telegram Admin Bot"
+        }
       }
     },
     {
@@ -1881,7 +1887,7 @@
         ]
       ]
     },
-    "TelegramTrigger Admin": {
+    "AdminTrigger": {
       "main": [
         [
           {

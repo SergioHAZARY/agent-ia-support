@@ -1306,7 +1306,7 @@ nodes = [
            "Reponses groupees par categorie, canal, priorite ou societe.\n"
            "Credential : Telegram Admin Bot (telegramAdminApi).",
            [-60, 940], w=520, h=140),
-    node("TelegramTrigger Admin", "n8n-nodes-base.telegramTrigger", 1.2, [220, 1020], {
+    node("AdminTrigger", "n8n-nodes-base.telegramTrigger", 1.2, [220, 1020], {
         "updates": ["message"],
         "additionalFields": {}},
         creds=({"telegramApi": CREDS["telegramAdminApi"]} if "telegramAdminApi" in CREDS else None)),
@@ -1404,7 +1404,7 @@ connections = merge_conn(
         ("Webhook reporting", "PG: tickets en cours"),
         ("PG: tickets en cours", "Formater le rapport"),
         # --- Bot Admin (@itmg_admin_bot) ---
-        ("TelegramTrigger Admin", "Parser admin"),
+        ("AdminTrigger", "Parser admin"),
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
         ("Formater admin", "HTTP: reponse admin"),
