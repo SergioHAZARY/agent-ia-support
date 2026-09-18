@@ -575,6 +575,75 @@ return [{ json: {
 }}];
 """.strip()
 
+DETECT_REPORTING_JS = r"""
+// Detecte si le message est une demande de consultation de tickets/reporting.
+// Arrive uniquement sur la branche non-ticket (is_ticket = false).
+const parsed = $json;
+const body = ((parsed._source || {}).message_body || '').toLowerCase();
+
+// Mots-cles de consultation de tickets (FR + EN)
+const isReporting = (
+  /\btickets?\b/.test(body) && /(liste|lister|montre|affich|voir|consulter|en\s*cours|ouverts?|clos|ferm|suivi|combien|nombre|status|etat|show|list|display|get)/i.test(body)
+) || /\b(reporting|rapport\b.*ticket|suivi\b.*demande)/i.test(body);
+
+return [{ json: Object.assign({}, parsed, { _is_reporting: isReporting }) }];
+""".strip()
+
+FORMAT_REPORT_DM_JS = r"""
+// Formate la liste des tickets en reponse lisible pour le DM.
+const tickets = $input.all().map(i => i.json);
+let src;
+try { src = $('Fusionner texte image').item.json; } catch(e) { src = $('Normaliser (multicanal)').item.json; }
+
+let reply = '';
+if (tickets.length === 0) {
+  reply = "Aucun ticket en cours actuellement. Tous les problemes ont ete resolus !";
+} else {
+  reply = "📋 *Tickets en cours* (" + tickets.length + ")\n\n";
+  for (const t of tickets) {
+    const prio = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'}[t.priority] || '⚪';
+    reply += prio + " *" + (t.ref || t.id.slice(0,8)) + "* — " + (t.title||'').slice(0,60) + "\n"
+      + "   " + (t.category||'') + " | " + (t.status||'') + " | " + (t.autonomy_level||'') + "\n\n";
+  }
+  reply += "Pour plus de details sur un ticket, donne-moi sa reference.";
+}
+
+let chat_id = src.external_id || '';
+if ((src.platform || '') === 'telegram') {
+  try {
+    const tg = $('TelegramTrigger').item.json;
+    const msg = tg.message || tg.channel_post || {};
+    chat_id = String((msg.chat || {}).id || src.external_id || '');
+  } catch(e) {}
+}
+
+return [{ json: { platform: src.platform || 'telegram', chat_id, reply_text: reply,
+  resolution_status: 'not_a_ticket', ticket_ref: '', ticket_id: '',
+  autonomy_level: 'N0', _source: src } }];
+""".strip()
+
+NOTIFY_TICKET_JS = r"""
+// Notification breve HTML pour le groupe DEV MG a chaque nouveau ticket.
+const parsed = $('Parser + garde-fous').item.json;
+const src = parsed._source || {};
+const pg = $json;
+const ticketRef = pg.ref || ('IT-' + (pg.id || '').toString().slice(0, 8));
+const level = parsed.autonomy_level || 'N0';
+const prio = parsed.priority || 'p3';
+const prioIcon = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'}[prio] || '⚪';
+
+function esc_html(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const msg = '📩 <b>Nouveau ticket</b> ' + esc_html(ticketRef) + '\n'
+  + prioIcon + ' ' + esc_html(prio.toUpperCase()) + ' | ' + esc_html(level)
+  + ' | ' + esc_html(parsed.category || '') + '\n'
+  + '👤 ' + esc_html(src.sender_raw || 'Inconnu')
+  + ' (' + esc_html(src.platform || '') + ')\n'
+  + '📝 ' + esc_html((parsed.title || parsed.summary || '').slice(0, 120));
+
+return [{ json: { notif_text: msg } }];
+""".strip()
+
 JIRA_DEDUP_JS = r"""
 // Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).
 // Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).
@@ -629,6 +698,15 @@ PG_TICKET_SQL = (
     "values ($1,$2,$3,$4,$5,$6,$7,$8,'nouveau',$9,$10) returning id, ref;")
 
 PG_REPORT_SQL = "select * from v_tickets_ouverts limit 100;"
+
+# Requete pour la consultation de tickets en DM (reporting conversationnel)
+PG_REPORT_DM_SQL = (
+    "SELECT id::text, ref, title, category, priority, status, autonomy_level,"
+    " to_char(created_at, 'DD/MM HH24:MI') as cree_le"
+    " FROM tickets"
+    " WHERE status NOT IN ('clos', 'annule')"
+    " ORDER BY CASE priority WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 WHEN 'p3' THEN 3 ELSE 4 END,"
+    " created_at DESC LIMIT 20;")
 
 # Enrichissement du contexte en une seule requete : historique, cas_similaires,
 # runbooks disponibles, et identite du demandeur.
@@ -691,14 +769,20 @@ def pg_node(name, pos, sql, repl_expr):
 # --------------------------------------------------------------------------- #
 NOTE = (
     "## AgentSupport - Pipeline v2 (multicanal, contexte enrichi)\n\n"
-    "Canaux -> normalise -> PG events -> resoudre societe -> ENRICHIR CONTEXTE\n"
-    "(historique + cas similaires + runbooks + identite) -> AGENT CLAUDE\n"
+    "CANAUX : Telegram | Webhook (Jira, Teams, ClickUp, GChat) | Email IMAP.\n"
+    "Normalise -> PG events -> societe -> ENRICHIR CONTEXTE -> AGENT CLAUDE\n"
     "-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n\n"
-    "N1 -> execute runbook (webhook) si configure, sinon guide.\n"
-    "N3 -> ClickUp (Escalades Agent IA) + Telegram DEV MG.\n\n"
+    "REPORTING : detection auto des demandes de tickets -> requete PG.\n"
+    "NOTIFICATION : chaque nouveau ticket alerte le groupe DEV MG.\n"
+    "N3 -> ClickUp (Escalades Agent IA) + alerte detaillee DEV MG.\n\n"
     "LIVRAISON MULTI-CANAL : Telegram | Email | Jira comment | ClickUp comment.\n"
     "Audit PG : final_response + ticket_events sur chaque reponse.\n\n"
     "Genere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.\n\n"
+    "WEBHOOKS :\n"
+    "  /webhook/agent-support         (generique)\n"
+    "  /webhook/agent-support-jira    (Jira)\n"
+    "  /webhook/agent-support-teams   (Teams)\n"
+    "  /webhook/agent-support-reporting (GET, reporting API)\n\n"
     "VARIABLES N8N A CREER :\n"
     "CLICKUP_API_TOKEN, CLICKUP_LIST_ID, TELEGRAM_DEVMG_CHAT_ID,\n"
     "TELEGRAM_BOT_TOKEN, SMTP_FROM (optionnel)"
@@ -722,7 +806,14 @@ nodes = [
     # Jira : le polling est fait par scripts/poll_jira.py (local) car n8n cloud
     # est bloqué par les restrictions IP Atlassian. Les events arrivent directement
     # dans la table events de Supabase.
-    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 540]),
+    # Webhooks dedies par plateforme (prets a recevoir quand les comptes sont configures)
+    node("Webhook Jira", "n8n-nodes-base.webhook", 1.1, [-60, 440], {
+        "httpMethod": "POST", "path": "agent-support-jira",
+        "responseMode": "onReceived", "options": {}}),
+    node("Webhook Teams", "n8n-nodes-base.webhook", 1.1, [-60, 540], {
+        "httpMethod": "POST", "path": "agent-support-teams",
+        "responseMode": "onReceived", "options": {}}),
+    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 660]),
 
     # --- Filtre Telegram (mention @itmg_support_bot ou DM) ---
     node("Filtre Telegram (mention)", "n8n-nodes-base.code", 2, [100, 60],
@@ -803,8 +894,23 @@ nodes = [
                                        "operator": {"type": "boolean", "operation": "true",
                                                     "singleValue": True}}]},
         "options": {}}),
-    # Non-ticket : repondre naturellement (salutations, merci, etc.)
-    node("Preparer reponse (non-ticket)", "n8n-nodes-base.code", 2, [1800, 40],
+    # Non-ticket : detecter si c'est une demande de reporting/tickets
+    node("Detecter reporting", "n8n-nodes-base.code", 2, [1760, -20],
+         {"jsCode": DETECT_REPORTING_JS}),
+    node("Est-ce un reporting ?", "n8n-nodes-base.if", 2.3, [1940, -20], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "rpt1",
+                                       "leftValue": "={{ $json._is_reporting }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "boolean", "operation": "true",
+                                                    "singleValue": True}}]},
+        "options": {}}),
+    pg_node("PG: lister tickets", [2120, -100], PG_REPORT_DM_SQL, ""),
+    node("Formater rapport DM", "n8n-nodes-base.code", 2, [2340, -100],
+         {"jsCode": FORMAT_REPORT_DM_JS}),
+    # Non-ticket classique (salutations, merci, etc.)
+    node("Preparer reponse (non-ticket)", "n8n-nodes-base.code", 2, [2120, 40],
          {"jsCode": PREPARE_REPLY_NONTICKET_JS}),
     pg_node("PG: creer le ticket", [1800, 300], PG_TICKET_SQL,
             "={{ [$json._source.tenant_id || null, $json.title, $json.summary, "
@@ -839,6 +945,16 @@ nodes = [
         "jsonBody": "={{ JSON.stringify($json.runbook_params) }}",
         "options": {"response": {"response": {"responseFormat": "json"}}}}),
     node("N2 guider", "n8n-nodes-base.noOp", 1, [2260, 400]),
+    # --- Notification DEV MG pour TOUT nouveau ticket (toutes plateformes) ---
+    node("Notifier nouveau ticket", "n8n-nodes-base.code", 2, [2020, 480],
+         {"jsCode": NOTIFY_TICKET_JS}),
+    node("TG: notif DEV MG", "n8n-nodes-base.telegram", 1.2, [2240, 480], {
+        "operation": "sendMessage",
+        "chatId": "={{ $vars.TELEGRAM_DEVMG_CHAT_ID || '-5219441607' }}",
+        "text": "={{ $json.notif_text }}",
+        "additionalFields": {"parse_mode": "HTML", "appendAttribution": False}},
+        creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None),
+        on_error="continueRegularOutput"),
     # --- Escalade N3 : ClickUp + alerte Telegram DEV MG ---
     node("Preparer escalade N3", "n8n-nodes-base.code", 2, [2260, 540],
          {"jsCode": PREPARE_ESCALADE_JS}),
@@ -948,6 +1064,8 @@ connections = merge_conn(
         ("TelegramTrigger", "Filtre Telegram (mention)"),
         ("Filtre Telegram (mention)", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
+        ("Webhook Jira", "Normaliser (multicanal)"),
+        ("Webhook Teams", "Normaliser (multicanal)"),
         ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
         # --- Vision ---
@@ -966,12 +1084,19 @@ connections = merge_conn(
         ("Assembler le contexte", "Agent Claude (triage)"),
         ("Agent Claude (triage)", "Parser + garde-fous"),
         ("Parser + garde-fous", "Est-ce un ticket ?"),
-        # --- Non-ticket → livraison directe ---
-        ("Est-ce un ticket ?", "Preparer reponse (non-ticket)", 1),
+        # --- Non-ticket → detecter reporting ou repondre ---
+        ("Est-ce un ticket ?", "Detecter reporting", 1),
+        ("Detecter reporting", "Est-ce un reporting ?"),
+        ("Est-ce un reporting ?", "PG: lister tickets", 0),
+        ("Est-ce un reporting ?", "Preparer reponse (non-ticket)", 1),
+        ("PG: lister tickets", "Formater rapport DM"),
+        ("Formater rapport DM", "Router par canal"),
         ("Preparer reponse (non-ticket)", "Router par canal"),
-        # --- Ticket → creer + router par niveau ---
+        # --- Ticket → creer + router par niveau + notifier DEV MG ---
         ("Est-ce un ticket ?", "PG: creer le ticket", 0),
         ("PG: creer le ticket", "Router par niveau"),
+        ("PG: creer le ticket", "Notifier nouveau ticket"),
+        ("Notifier nouveau ticket", "TG: notif DEV MG"),
         ("Router par niveau", "N0 repondre", 0),
         ("Router par niveau", "N1 executer runbook", 1),
         ("Router par niveau", "N2 guider", 2),

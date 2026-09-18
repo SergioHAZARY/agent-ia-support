@@ -10,7 +10,7 @@
         -320
       ],
       "parameters": {
-        "content": "## AgentSupport - Pipeline v2 (multicanal, contexte enrichi)\n\nCanaux -> normalise -> PG events -> resoudre societe -> ENRICHIR CONTEXTE\n(historique + cas similaires + runbooks + identite) -> AGENT CLAUDE\n-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n\nN1 -> execute runbook (webhook) si configure, sinon guide.\nN3 -> ClickUp (Escalades Agent IA) + Telegram DEV MG.\n\nLIVRAISON MULTI-CANAL : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events sur chaque reponse.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.\n\nVARIABLES N8N A CREER :\nCLICKUP_API_TOKEN, CLICKUP_LIST_ID, TELEGRAM_DEVMG_CHAT_ID,\nTELEGRAM_BOT_TOKEN, SMTP_FROM (optionnel)",
+        "content": "## AgentSupport - Pipeline v2 (multicanal, contexte enrichi)\n\nCANAUX : Telegram | Webhook (Jira, Teams, ClickUp, GChat) | Email IMAP.\nNormalise -> PG events -> societe -> ENRICHIR CONTEXTE -> AGENT CLAUDE\n-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n\nREPORTING : detection auto des demandes de tickets -> requete PG.\nNOTIFICATION : chaque nouveau ticket alerte le groupe DEV MG.\nN3 -> ClickUp (Escalades Agent IA) + alerte detaillee DEV MG.\n\nLIVRAISON MULTI-CANAL : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events sur chaque reponse.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.\n\nWEBHOOKS :\n  /webhook/agent-support         (generique)\n  /webhook/agent-support-jira    (Jira)\n  /webhook/agent-support-teams   (Teams)\n  /webhook/agent-support-reporting (GET, reporting API)\n\nVARIABLES N8N A CREER :\nCLICKUP_API_TOKEN, CLICKUP_LIST_ID, TELEGRAM_DEVMG_CHAT_ID,\nTELEGRAM_BOT_TOKEN, SMTP_FROM (optionnel)",
         "height": 320,
         "width": 680
       }
@@ -65,12 +65,42 @@
       "disabled": true
     },
     {
+      "name": "Webhook Jira",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -60,
+        440
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-support-jira",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "name": "Webhook Teams",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -60,
+        540
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-support-teams",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
       "name": "Declencheur manuel",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
         -60,
-        540
+        660
       ],
       "parameters": {}
     },
@@ -378,11 +408,88 @@
       }
     },
     {
+      "name": "Detecter reporting",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -20
+      ],
+      "parameters": {
+        "jsCode": "// Detecte si le message est une demande de consultation de tickets/reporting.\n// Arrive uniquement sur la branche non-ticket (is_ticket = false).\nconst parsed = $json;\nconst body = ((parsed._source || {}).message_body || '').toLowerCase();\n\n// Mots-cles de consultation de tickets (FR + EN)\nconst isReporting = (\n  /\\btickets?\\b/.test(body) && /(liste|lister|montre|affich|voir|consulter|en\\s*cours|ouverts?|clos|ferm|suivi|combien|nombre|status|etat|show|list|display|get)/i.test(body)\n) || /\\b(reporting|rapport\\b.*ticket|suivi\\b.*demande)/i.test(body);\n\nreturn [{ json: Object.assign({}, parsed, { _is_reporting: isReporting }) }];"
+      }
+    },
+    {
+      "name": "Est-ce un reporting ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1940,
+        -20
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rpt1",
+              "leftValue": "={{ $json._is_reporting }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "PG: lister tickets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2120,
+        -100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id::text, ref, title, category, priority, status, autonomy_level, to_char(created_at, 'DD/MM HH24:MI') as cree_le FROM tickets WHERE status NOT IN ('clos', 'annule') ORDER BY CASE priority WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 WHEN 'p3' THEN 3 ELSE 4 END, created_at DESC LIMIT 20;",
+        "options": {
+          "queryReplacement": ""
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CqzEkT0Z7NlfszSN",
+          "name": "Postgres AgentSupport"
+        }
+      }
+    },
+    {
+      "name": "Formater rapport DM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2340,
+        -100
+      ],
+      "parameters": {
+        "jsCode": "// Formate la liste des tickets en reponse lisible pour le DM.\nconst tickets = $input.all().map(i => i.json);\nlet src;\ntry { src = $('Fusionner texte image').item.json; } catch(e) { src = $('Normaliser (multicanal)').item.json; }\n\nlet reply = '';\nif (tickets.length === 0) {\n  reply = \"Aucun ticket en cours actuellement. Tous les problemes ont ete resolus !\";\n} else {\n  reply = \"📋 *Tickets en cours* (\" + tickets.length + \")\\n\\n\";\n  for (const t of tickets) {\n    const prio = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'}[t.priority] || '⚪';\n    reply += prio + \" *\" + (t.ref || t.id.slice(0,8)) + \"* — \" + (t.title||'').slice(0,60) + \"\\n\"\n      + \"   \" + (t.category||'') + \" | \" + (t.status||'') + \" | \" + (t.autonomy_level||'') + \"\\n\\n\";\n  }\n  reply += \"Pour plus de details sur un ticket, donne-moi sa reference.\";\n}\n\nlet chat_id = src.external_id || '';\nif ((src.platform || '') === 'telegram') {\n  try {\n    const tg = $('TelegramTrigger').item.json;\n    const msg = tg.message || tg.channel_post || {};\n    chat_id = String((msg.chat || {}).id || src.external_id || '');\n  } catch(e) {}\n}\n\nreturn [{ json: { platform: src.platform || 'telegram', chat_id, reply_text: reply,\n  resolution_status: 'not_a_ticket', ticket_ref: '', ticket_id: '',\n  autonomy_level: 'N0', _source: src } }];"
+      }
+    },
+    {
       "name": "Preparer reponse (non-ticket)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1800,
+        2120,
         40
       ],
       "parameters": {
@@ -588,6 +695,43 @@
         400
       ],
       "parameters": {}
+    },
+    {
+      "name": "Notifier nouveau ticket",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        480
+      ],
+      "parameters": {
+        "jsCode": "// Notification breve HTML pour le groupe DEV MG a chaque nouveau ticket.\nconst parsed = $('Parser + garde-fous').item.json;\nconst src = parsed._source || {};\nconst pg = $json;\nconst ticketRef = pg.ref || ('IT-' + (pg.id || '').toString().slice(0, 8));\nconst level = parsed.autonomy_level || 'N0';\nconst prio = parsed.priority || 'p3';\nconst prioIcon = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'}[prio] || '⚪';\n\nfunction esc_html(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\n\nconst msg = '📩 <b>Nouveau ticket</b> ' + esc_html(ticketRef) + '\\n'\n  + prioIcon + ' ' + esc_html(prio.toUpperCase()) + ' | ' + esc_html(level)\n  + ' | ' + esc_html(parsed.category || '') + '\\n'\n  + '👤 ' + esc_html(src.sender_raw || 'Inconnu')\n  + ' (' + esc_html(src.platform || '') + ')\\n'\n  + '📝 ' + esc_html((parsed.title || parsed.summary || '').slice(0, 120));\n\nreturn [{ json: { notif_text: msg } }];"
+      }
+    },
+    {
+      "name": "TG: notif DEV MG",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2240,
+        480
+      ],
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $vars.TELEGRAM_DEVMG_CHAT_ID || '-5219441607' }}",
+        "text": "={{ $json.notif_text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "t0Qk3TiKck5eaRQ4",
+          "name": "Telegram Agent Support"
+        }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "name": "Preparer escalade N3",
@@ -1052,6 +1196,28 @@
         ]
       ]
     },
+    "Webhook Jira": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Teams": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Email IMAP (Outlook)": {
       "main": [
         [
@@ -1224,7 +1390,58 @@
         ],
         [
           {
+            "node": "Detecter reporting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detecter reporting": {
+      "main": [
+        [
+          {
+            "node": "Est-ce un reporting ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Est-ce un reporting ?": {
+      "main": [
+        [
+          {
+            "node": "PG: lister tickets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Preparer reponse (non-ticket)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG: lister tickets": {
+      "main": [
+        [
+          {
+            "node": "Formater rapport DM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formater rapport DM": {
+      "main": [
+        [
+          {
+            "node": "Router par canal",
             "type": "main",
             "index": 0
           }
@@ -1247,6 +1464,22 @@
         [
           {
             "node": "Router par niveau",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notifier nouveau ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notifier nouveau ticket": {
+      "main": [
+        [
+          {
+            "node": "TG: notif DEV MG",
             "type": "main",
             "index": 0
           }
