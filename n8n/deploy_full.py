@@ -109,9 +109,15 @@ def deploy_workflow():
 # ---- 3. Toggle workflow (off/on) pour re-enregistrer les webhooks -----------
 def toggle_workflow(wf_id):
     print("\n=== Activation workflow (toggle off/on pour webhooks) ===")
-    st1, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": False})
+    # n8n cloud : POST /workflows/{id}/activate et /deactivate
+    st1, _ = call("POST", f"/workflows/{wf_id}/deactivate")
+    if st1 in (404, 405):
+        # Fallback API v1 : PATCH avec body
+        st1, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": False})
     print(f"  Desactive -> {st1}")
-    st2, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
+    st2, _ = call("POST", f"/workflows/{wf_id}/activate")
+    if st2 in (404, 405):
+        st2, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
     print(f"  Active    -> {st2}")
     if st2 == 200:
         print("  OK : workflow actif, webhooks re-enregistres")
