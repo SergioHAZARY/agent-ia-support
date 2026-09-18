@@ -8,8 +8,11 @@ name: Deploy n8n
 #   N8N_BASE_URL   ex. https://dev-ai.app.n8n.cloud
 #   N8N_API_KEY    la clé API n8n
 #
-# Le workflow est déployé INACTIF ; l'activation reste manuelle dans l'UI,
-# une fois les credentials Anthropic et Telegram attachées.
+# Le workflow est déployé puis activé (toggle off/on pour re-enregistrer
+# les webhooks Telegram). Les variables n8n sont créées si absentes.
+#
+# Secrets optionnels supplémentaires :
+#   CLICKUP_API_TOKEN  (crée la variable n8n pour l'escalade N3)
 
 on:
   push:
@@ -33,13 +36,14 @@ jobs:
       - name: Reconstruire le workflow depuis la source
         run: python n8n/build_pipeline.py
 
-      - name: Déployer vers n8n
+      - name: Déployer vers n8n (variables + workflow + activation)
         env:
           N8N_BASE_URL: ${{ secrets.N8N_BASE_URL }}
           N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
         run: |
           if [ -z "$N8N_API_KEY" ]; then
             echo "::warning::Secrets n8n absents — déploiement ignoré. Ajoutez N8N_BASE_URL et N8N_API_KEY."
             exit 0
           fi
-          python n8n/sync.py
+          python n8n/deploy_full.py

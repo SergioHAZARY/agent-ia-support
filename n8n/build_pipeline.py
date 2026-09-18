@@ -203,36 +203,70 @@ return [{ json: ev }];
 """.strip()
 
 ASSEMBLE_JS = r"""
-// WF-02 : contexte. Fusionne ce que PostgreSQL a renvoye (societe/policies)
-// avec des defauts prudents. Si le canal est inconnu -> palier P1.
-const pg = $json && $json.tenant_id ? $json : null;   // société résolue, ou null (canal inconnu)
+// WF-02 : contexte enrichi. Fusionne societe + historique + runbooks + identite.
+const pgTenant = $('PG: resoudre societe').item.json;
+const pg = pgTenant && pgTenant.tenant_id ? pgTenant : null;
+
+// Enrichissement : historique, cas_similaires, runbooks, identite
+let enriched;
+try { enriched = $('PG: enrichir contexte').item.json; } catch(e) { enriched = {}; }
+const hist = enriched.historique || [];
+const similar = enriched.cas_similaires || [];
+const rbs = enriched.runbooks || [];
+const ident = enriched.identity || null;
 
 const ctx = {
   max_autonomy: (pg && pg.max_autonomy) || 'N3',
   observation_only: pg ? !!pg.observation_only : false,
-  identity: { verified: false, role: 'employe', email: null },  // WF-09 remplira
-  runbooks: {},                                                 // v_runbooks_disponibles
+  identity: ident && ident.verified
+    ? { verified: true, role: ident.role || 'employe', email: ident.email || null }
+    : { verified: false, role: 'employe', email: null },
+  runbooks: {},
   taxonomy_categories: ['acces_licences','compte_identite','messagerie','poste_travail',
     'reseau','applicatif','developpement','securite','information','hors_perimetre'],
   confidence_floor: 0.7,
 };
 
-// La société résolue (si le canal est déclaré) est reportée sur l'événement
-// pour lier le ticket. Sinon null : l'agent trie et trace quand même (P1).
-// Si la vision a fusionne du texte, on le prend ; sinon, le message brut.
+// Construire la map runbooks pour les garde-fous
+for (const r of rbs) {
+  ctx.runbooks[r.code] = {
+    autonomy_level: r.autonomy_level,
+    allowed_roles: (r.roles || '').split(',').filter(Boolean),
+    manager_approval: false
+  };
+}
+
+// Source : vision fusionnee ou message brut
 let baseEvent;
 try { baseEvent = $('Fusionner texte image').item.json; } catch(e) { baseEvent = null; }
 if (!baseEvent) baseEvent = $('Normaliser (multicanal)').item.json;
 const src = Object.assign({}, baseEvent,
   { tenant_id: (pg && pg.tenant_id) || null });
 
-const userContent =
-  "<demandeur>" + (src.sender_raw || 'INCONNU') + "</demandeur>\n" +
-  "<canal>" + src.platform + " / " + (src.external_id||'') + "</canal>\n" +
-  "<historique></historique>\n<kb></kb>\n<cas_similaires></cas_similaires>\n" +
-  "<runbooks></runbooks>\n\n<message>\n" + (src.message_body||'') + "\n</message>";
+// Formater les sections de contexte
+const histText = hist.length
+  ? hist.map(h => '[' + h.ts + '] ' + (h.body || '').slice(0, 200)).join('\n')
+  : '';
+const similarText = similar.length
+  ? similar.map(s => '[' + (s.ref||'?') + '] ' + (s.title||'') + ' -> ' + (s.ai_response||'').slice(0, 200)).join('\n')
+  : '';
+const rbText = rbs.length
+  ? rbs.map(r => r.code + ' (' + r.autonomy_level + ') : ' + r.title
+    + (r.preconditions ? ' [Condition: ' + r.preconditions.slice(0,120) + ']' : '')).join('\n')
+  : '';
+const identText = ident
+  ? ident.full_name + ' (' + ident.role + ', verifie: ' + ident.verified + ')'
+  : (src.sender_raw || 'INCONNU');
 
-// L'Agent Claude (chainLlm) recoit prompt systeme + contexte en un seul texte.
+const userContent =
+  "<demandeur>" + identText + "</demandeur>\n" +
+  "<canal>" + src.platform + " / " + (src.external_id||'') + "</canal>\n" +
+  "<historique>" + histText + "</historique>\n" +
+  "<kb></kb>\n" +
+  "<cas_similaires>" + similarText + "</cas_similaires>\n" +
+  "<runbooks>" + rbText + "</runbooks>\n\n" +
+  "<message>\n" + (src.message_body||'') + "\n</message>";
+
 return [{ json: { ctx, userContent, source: src,
   llm_prompt: (SYSTEM_PROMPT_PLACEHOLDER) + "\n\n" + userContent } }];
 """.strip()
@@ -346,26 +380,27 @@ if (platform === 'telegram') {
   } catch(e) { /* pas un trigger telegram */ }
 }
 
-return [{ json: { platform, chat_id, reply_text: reply, resolution_status: status, ticket_ref: ticketRef } }];
+// Recuperer le ticket_id depuis PG pour l'audit
+let ticketId = '';
+try { ticketId = $('PG: creer le ticket').item.json.id || ''; } catch(e) {}
+
+return [{ json: { platform, chat_id, reply_text: reply, resolution_status: status,
+  ticket_ref: ticketRef, ticket_id: ticketId, autonomy_level: level,
+  _source: src } }];
 """.strip()
 
 PREPARE_REPLY_NONTICKET_JS = r"""
 // Prepare la reponse pour un NON-TICKET (salutations, remerciements, etc.)
-// L'agent repond naturellement sans creer de ticket.
 let src;
 try { src = $('Fusionner texte image').item.json; } catch(e) { src = $('Normaliser (multicanal)').item.json; }
 const parsed = $('Parser + garde-fous').item.json;
 const platform = src.platform || '';
 
-// Reponse de Claude (le prompt dit toujours de remplir proposed_response)
 let reply = (parsed.proposed_response || '').trim();
-
-// Fallback si le modele n'a rien propose
 if (!reply) {
   reply = "Bonjour ! Je suis l'agent de support IT. Comment puis-je vous aider ?";
 }
 
-// Chat ID
 let chat_id = src.external_id || '';
 if (platform === 'telegram') {
   try {
@@ -375,7 +410,8 @@ if (platform === 'telegram') {
   } catch(e) {}
 }
 
-return [{ json: { platform, chat_id, reply_text: reply, resolution_status: 'not_a_ticket', ticket_ref: '' } }];
+return [{ json: { platform, chat_id, reply_text: reply, resolution_status: 'not_a_ticket',
+  ticket_ref: '', ticket_id: '', autonomy_level: 'N0', _source: src } }];
 """.strip()
 
 VISION_PREPARE_JS = r"""
@@ -484,6 +520,56 @@ const msg = '⚠️ *ESCALADE AGENT IA*\n\n'
 return [{ json: { alert_text: msg, task_url: taskUrl, task_id: taskId } }];
 """.strip()
 
+N1_EXECUTE_JS = r"""
+// N1 : tente d'executer le runbook si un webhook est configure.
+// Sinon, la reponse de l'agent contient deja la procedure a suivre.
+const parsed = $('Parser + garde-fous').item.json;
+const rbCode = parsed.runbook_code || '';
+let enriched;
+try { enriched = $('PG: enrichir contexte').item.json; } catch(e) { enriched = {}; }
+const rbs = enriched.runbooks || [];
+const rb = rbs.find(r => r.code === rbCode);
+
+const result = {
+  has_webhook: false,
+  webhook_url: '',
+  runbook_code: rbCode,
+  runbook_params: parsed.runbook_params || {},
+  runbook_title: rb ? rb.title : rbCode
+};
+if (rb && rb.n8n_webhook) {
+  result.has_webhook = true;
+  result.webhook_url = rb.n8n_webhook;
+}
+return [{ json: result }];
+""".strip()
+
+JIRA_COMMENT_JS = r"""
+// Prepare le commentaire Jira : extraire l'issue key et le site depuis source_message_id.
+const reply = $json.reply_text || '';
+const src = $json._source || {};
+const issueKey = src.source_message_id || '';
+const extId = src.external_id || '';
+const site = extId.includes('.') ? extId : 'bzcmtc.atlassian.net';
+return [{ json: {
+  url: 'https://' + site + '/rest/api/3/issue/' + issueKey + '/comment',
+  body: { body: { type: 'doc', version: 1, content: [
+    { type: 'paragraph', content: [{ type: 'text', text: reply.slice(0, 2000) }] }
+  ]}}
+}}];
+""".strip()
+
+CLICKUP_COMMENT_JS = r"""
+// Prepare le commentaire ClickUp pour les demandes arrivees depuis ClickUp.
+const reply = $json.reply_text || '';
+const src = $json._source || {};
+const taskId = src.source_message_id || '';
+return [{ json: {
+  url: 'https://api.clickup.com/api/v2/task/' + taskId + '/comment',
+  body: { comment_text: reply.slice(0, 2000) }
+}}];
+""".strip()
+
 JIRA_DEDUP_JS = r"""
 // Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).
 // Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).
@@ -539,6 +625,53 @@ PG_TICKET_SQL = (
 
 PG_REPORT_SQL = "select * from v_tickets_ouverts limit 100;"
 
+# Enrichissement du contexte en une seule requete : historique, cas_similaires,
+# runbooks disponibles, et identite du demandeur.
+# $1=sender_raw $2=platform $3=external_id $4=tenant_id $5=sender_external_id
+PG_ENRICH_SQL = (
+    "SELECT"
+    " (SELECT COALESCE(json_agg(h), '[]'::json) FROM ("
+    "   SELECT body, to_char(received_at, 'YYYY-MM-DD HH24:MI') as ts"
+    "   FROM events"
+    "   WHERE sender_raw = $1"
+    "   AND channel_id IN (SELECT id FROM channels WHERE platform = $2 AND external_id = $3)"
+    "   ORDER BY received_at DESC OFFSET 1 LIMIT 5"
+    " ) h) AS historique,"
+    " (SELECT COALESCE(json_agg(s), '[]'::json) FROM ("
+    "   SELECT ref, title, summary, ai_response, category"
+    "   FROM tickets WHERE tenant_id = $4::uuid AND status IN ('resolu','clos')"
+    "   ORDER BY created_at DESC LIMIT 5"
+    " ) s) AS cas_similaires,"
+    " (SELECT COALESCE(json_agg(r), '[]'::json) FROM ("
+    "   SELECT code, title, category, autonomy_level,"
+    "     array_to_string(allowed_roles, ',') as roles, preconditions"
+    "   FROM v_runbooks_disponibles WHERE tenant_id = $4::uuid"
+    " ) r) AS runbooks,"
+    " (SELECT row_to_json(i) FROM ("
+    "   SELECT id::text, full_name, email, role, verified"
+    "   FROM identities WHERE tenant_id = $4::uuid AND active = true"
+    "   AND (telegram_user_id = $5 OR teams_user_id = $5 OR google_user_id = $5"
+    "     OR email ILIKE $5"
+    "     OR (length($1) > 2 AND full_name ILIKE '%' || $1 || '%'))"
+    "   LIMIT 1"
+    " ) i) AS identity;")
+
+# Audit : enregistre ce qui a ete envoye + trace dans ticket_events
+PG_AUDIT_SQL = (
+    "WITH upd AS ("
+    "  UPDATE tickets SET final_response = $1,"
+    "    first_response_at = COALESCE(first_response_at, now())"
+    "  WHERE id = $2::uuid RETURNING id"
+    "), evt AS ("
+    "  INSERT INTO ticket_events (ticket_id, actor, action, payload)"
+    "  SELECT $2::uuid, 'agent', 'reponse',"
+    "    json_build_object('platform', $3, 'autonomy_level', $4,"
+    "      'delivered', $5::boolean)::jsonb"
+    "  WHERE EXISTS (SELECT 1 FROM upd)"
+    "  RETURNING id"
+    ") SELECT (SELECT id FROM upd) as ticket_id,"
+    "  (SELECT id FROM evt) as event_id;")
+
 
 def pg_node(name, pos, sql, repl_expr):
     return node(name, "n8n-nodes-base.postgres", 2.6, pos, {
@@ -552,16 +685,18 @@ def pg_node(name, pos, sql, repl_expr):
 # Noeuds
 # --------------------------------------------------------------------------- #
 NOTE = (
-    "## AgentSupport - Pipeline (workflow unique, multicanal)\n\n"
-    "Canaux -> n8n normalise -> PostgreSQL (events) -> contexte -> AGENT CLAUDE\n"
-    "-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n"
-    "N3 -> ClickUp (tache dans Escalades Agent IA) -> Telegram DEV MG (alerte techniciens).\n"
-    "Branche reporting separee : webhook -> PostgreSQL -> reponse.\n\n"
+    "## AgentSupport - Pipeline v2 (multicanal, contexte enrichi)\n\n"
+    "Canaux -> normalise -> PG events -> resoudre societe -> ENRICHIR CONTEXTE\n"
+    "(historique + cas similaires + runbooks + identite) -> AGENT CLAUDE\n"
+    "-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n\n"
+    "N1 -> execute runbook (webhook) si configure, sinon guide.\n"
+    "N3 -> ClickUp (Escalades Agent IA) + Telegram DEV MG.\n\n"
+    "LIVRAISON MULTI-CANAL : Telegram | Email | Jira comment | ClickUp comment.\n"
+    "Audit PG : final_response + ticket_events sur chaque reponse.\n\n"
     "Genere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.\n\n"
-    "CREDENTIALS A ATTACHER (puis activer) :\n"
-    "- Postgres 'Postgres AgentSupport' (Supabase ou VPS)\n"
-    "- Anthropic (noeud Agent Claude)\n"
-    "- Telegram / Teams / Google Chat / IMAP selon les canaux ouverts"
+    "VARIABLES N8N A CREER :\n"
+    "CLICKUP_API_TOKEN, CLICKUP_LIST_ID, TELEGRAM_DEVMG_CHAT_ID,\n"
+    "TELEGRAM_BOT_TOKEN, SMTP_FROM (optionnel)"
 )
 
 nodes = [
@@ -630,7 +765,13 @@ nodes = [
     pg_node("PG: resoudre societe", [660, 240], PG_CTX_SQL,
             "={{ [$('Normaliser (multicanal)').item.json.platform, "
             "$('Normaliser (multicanal)').item.json.external_id] }}"),
-    node("Assembler le contexte", "n8n-nodes-base.code", 2, [880, 240],
+    pg_node("PG: enrichir contexte", [780, 380], PG_ENRICH_SQL,
+            "={{ [$('Normaliser (multicanal)').item.json.sender_raw, "
+            "$('Normaliser (multicanal)').item.json.platform, "
+            "$('Normaliser (multicanal)').item.json.external_id, "
+            "$('PG: resoudre societe').item.json.tenant_id || null, "
+            "$('Normaliser (multicanal)').item.json.sender_external_id || ''] }}"),
+    node("Assembler le contexte", "n8n-nodes-base.code", 2, [1000, 240],
          {"jsCode": ASSEMBLE_JS}),
 
     # --- Agent Claude via OpenRouter ---
@@ -655,20 +796,6 @@ nodes = [
     # Non-ticket : repondre naturellement (salutations, merci, etc.)
     node("Preparer reponse (non-ticket)", "n8n-nodes-base.code", 2, [1800, 40],
          {"jsCode": PREPARE_REPLY_NONTICKET_JS}),
-    node("Est Telegram ? (non-ticket)", "n8n-nodes-base.if", 2.3, [2060, 40], {
-        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
-                       "combinator": "and",
-                       "conditions": [{"id": "c3",
-                                       "leftValue": "={{ $json.platform }}",
-                                       "rightValue": "telegram",
-                                       "operator": {"type": "string", "operation": "equals"}}]},
-        "options": {}}),
-    node("Telegram: repondre (non-ticket)", "n8n-nodes-base.telegram", 1.2, [2300, 40], {
-        "operation": "sendMessage",
-        "chatId": "={{ $json.chat_id }}",
-        "text": "={{ $json.reply_text }}",
-        "additionalFields": {"appendAttribution": False}},
-        creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
     pg_node("PG: creer le ticket", [1800, 300], PG_TICKET_SQL,
             "={{ [$json._source.tenant_id || null, $json.title, $json.summary, "
             "$json.category, $json.subcategory, $json.priority, "
@@ -683,7 +810,24 @@ nodes = [
              "outputKey": lvl} for lvl in ["N0", "N1", "N2", "N3"]]},
         "options": {}}),
     node("N0 repondre", "n8n-nodes-base.noOp", 1, [2260, 120]),
-    node("N1 valider puis executer", "n8n-nodes-base.noOp", 1, [2260, 260]),
+    node("N1 executer runbook", "n8n-nodes-base.code", 2, [2260, 260],
+         {"jsCode": N1_EXECUTE_JS}),
+    node("Runbook a webhook ?", "n8n-nodes-base.if", 2.3, [2400, 200], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "rw1",
+                                       "leftValue": "={{ $json.has_webhook }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "boolean", "operation": "true",
+                                                    "singleValue": True}}]},
+        "options": {}}),
+    node("Appeler webhook runbook", "n8n-nodes-base.httpRequest", 4.2, [2560, 140], {
+        "method": "POST",
+        "url": "={{ $json.webhook_url }}",
+        "sendBody": True,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.runbook_params) }}",
+        "options": {"response": {"response": {"responseFormat": "json"}}}}),
     node("N2 guider", "n8n-nodes-base.noOp", 1, [2260, 400]),
     # --- Escalade N3 : ClickUp + alerte Telegram DEV MG ---
     node("Preparer escalade N3", "n8n-nodes-base.code", 2, [2260, 540],
@@ -708,22 +852,72 @@ nodes = [
         "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False}},
         creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
 
-    # --- Réponse Telegram ---
-    node("Preparer reponse", "n8n-nodes-base.code", 2, [2500, 300], {"jsCode": PREPARE_REPLY_TICKET_JS}),
-    node("Est Telegram ?", "n8n-nodes-base.if", 2.3, [2720, 300], {
-        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
-                       "combinator": "and",
-                       "conditions": [{"id": "c2",
-                                       "leftValue": "={{ $json.platform }}",
-                                       "rightValue": "telegram",
-                                       "operator": {"type": "string", "operation": "equals"}}]},
-        "options": {}}),
-    node("Telegram: envoyer reponse", "n8n-nodes-base.telegram", 1.2, [2960, 300], {
+    # --- Reponse + Livraison multi-canal unifiee ---
+    node("Preparer reponse", "n8n-nodes-base.code", 2, [2600, 300], {"jsCode": PREPARE_REPLY_TICKET_JS}),
+    # Switch par plateforme : telegram / email / jira / clickup / autre
+    node("Router par canal", "n8n-nodes-base.switch", 3.2, [2840, 300], {
+        "rules": {"values": [
+            {"conditions": {"options": {"caseSensitive": True}, "combinator": "and",
+                            "conditions": [{"leftValue": "={{ $json.platform }}",
+                                            "rightValue": p,
+                                            "operator": {"type": "string", "operation": "equals"}}]},
+             "outputKey": p} for p in ["telegram", "email", "jira", "clickup"]]},
+        "options": {"fallbackOutput": "extra"}}),
+    node("Telegram: envoyer reponse", "n8n-nodes-base.telegram", 1.2, [3100, 120], {
         "operation": "sendMessage",
         "chatId": "={{ $json.chat_id }}",
         "text": "={{ $json.reply_text }}",
         "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False}},
         creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None)),
+    # Email : desactive tant que SMTP n'est pas configure (le ticket est enregistre en PG)
+    node("Email: repondre", "n8n-nodes-base.emailSend", 2.1, [3100, 260], {
+        "fromEmail": "={{ $vars.SMTP_FROM || 'support@exemple.com' }}",
+        "toEmail": "={{ $json._source.sender_external_id || '' }}",
+        "subject": "=Re: {{ $json.ticket_ref || 'Support IT' }}",
+        "text": "={{ $json.reply_text }}",
+        "options": {}},
+        disabled=("smtp" not in CREDS)),
+    # Jira : commenter l'issue d'origine
+    node("Preparer commentaire Jira", "n8n-nodes-base.code", 2, [3100, 400],
+         {"jsCode": JIRA_COMMENT_JS}),
+    node("Jira: commenter", "n8n-nodes-base.httpRequest", 4.2, [3320, 400], {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": True,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [
+            {"name": "Content-Type", "value": "application/json"}]},
+        "options": {"response": {"response": {"responseFormat": "json"}}}},
+        creds=({"httpBasicAuth": CREDS["jiraHttp"]} if "jiraHttp" in CREDS else None)),
+    # ClickUp : commenter la tache d'origine
+    node("Preparer commentaire ClickUp", "n8n-nodes-base.code", 2, [3100, 540],
+         {"jsCode": CLICKUP_COMMENT_JS}),
+    node("ClickUp: commenter", "n8n-nodes-base.httpRequest", 4.2, [3320, 540], {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [
+            {"name": "Authorization", "value": "={{ $vars.CLICKUP_API_TOKEN }}"},
+            {"name": "Content-Type", "value": "application/json"}]},
+        "sendBody": True,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {"response": {"response": {"responseFormat": "json"}}}}),
+    # Fallback : Teams, GChat, etc. — la reponse est enregistree en PG meme si non livree
+    node("Canal sans livraison directe", "n8n-nodes-base.noOp", 1, [3100, 680]),
+    # Audit PG : enregistrer la reponse finale + ticket_events (pour tickets uniquement)
+    pg_node("PG: audit reponse", [3560, 300], PG_AUDIT_SQL,
+            "={{ [$json.reply_text || $('Preparer reponse').item.json.reply_text || '', "
+            "$('Preparer reponse').item.json.ticket_id || "
+            "  $('Preparer reponse (non-ticket)').item.json.ticket_id || '00000000-0000-0000-0000-000000000000', "
+            "$('Preparer reponse').item.json.platform || "
+            "  $('Preparer reponse (non-ticket)').item.json.platform || '', "
+            "$('Preparer reponse').item.json.autonomy_level || 'N0', "
+            "true] }}"),
 
     # --- Branche reporting ---
     sticky("noteReport",
@@ -740,44 +934,67 @@ nodes = [
 
 connections = merge_conn(
     conn([
+        # --- Declencheurs → Normalisation ---
         ("TelegramTrigger", "Filtre Telegram (mention)"),
         ("Filtre Telegram (mention)", "Normaliser (multicanal)"),
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
-        # Vision branch : Normaliser -> "A une image ?" -> (oui) pipeline vision -> PG
-        #                                                 -> (non) PG directement
+        # --- Vision ---
         ("Normaliser (multicanal)", "A une image ?"),
-        ("A une image ?", "TG: getFile", 0),                    # sortie 0 = oui (image)
-        ("A une image ?", "PG: enregistrer evenement", 1),      # sortie 1 = non (pas d'image)
+        ("A une image ?", "TG: getFile", 0),
+        ("A une image ?", "PG: enregistrer evenement", 1),
         ("TG: getFile", "Preparer vision"),
         ("Preparer vision", "OpenRouter: vision"),
         ("OpenRouter: vision", "Fusionner texte image"),
         ("Fusionner texte image", "PG: enregistrer evenement"),
+        # --- Contexte enrichi ---
         ("PG: enregistrer evenement", "PG: resoudre societe"),
-        ("PG: resoudre societe", "Assembler le contexte"),
+        ("PG: resoudre societe", "PG: enrichir contexte"),
+        ("PG: enrichir contexte", "Assembler le contexte"),
+        # --- Agent Claude + garde-fous ---
         ("Assembler le contexte", "Agent Claude (triage)"),
         ("Agent Claude (triage)", "Parser + garde-fous"),
         ("Parser + garde-fous", "Est-ce un ticket ?"),
-        ("Est-ce un ticket ?", "PG: creer le ticket", 0),   # sortie 0 = vrai
-        ("Est-ce un ticket ?", "Preparer reponse (non-ticket)", 1),  # sortie 1 = faux
-        ("Preparer reponse (non-ticket)", "Est Telegram ? (non-ticket)"),
-        ("Est Telegram ? (non-ticket)", "Telegram: repondre (non-ticket)", 0),
+        # --- Non-ticket → livraison directe ---
+        ("Est-ce un ticket ?", "Preparer reponse (non-ticket)", 1),
+        ("Preparer reponse (non-ticket)", "Router par canal"),
+        # --- Ticket → creer + router par niveau ---
+        ("Est-ce un ticket ?", "PG: creer le ticket", 0),
         ("PG: creer le ticket", "Router par niveau"),
         ("Router par niveau", "N0 repondre", 0),
-        ("Router par niveau", "N1 valider puis executer", 1),
+        ("Router par niveau", "N1 executer runbook", 1),
         ("Router par niveau", "N2 guider", 2),
         ("Router par niveau", "Preparer escalade N3", 3),
+        # --- N0/N2 → reponse directe ---
         ("N0 repondre", "Preparer reponse"),
-        ("N1 valider puis executer", "Preparer reponse"),
         ("N2 guider", "Preparer reponse"),
-        # N3 : escalade ClickUp + alerte Telegram DEV MG, puis reponse utilisateur
+        # --- N1 → tenter execution runbook ---
+        ("N1 executer runbook", "Runbook a webhook ?"),
+        ("Runbook a webhook ?", "Appeler webhook runbook", 0),
+        ("Runbook a webhook ?", "Preparer reponse", 1),
+        ("Appeler webhook runbook", "Preparer reponse"),
+        # --- N3 → escalade ClickUp + alerte Telegram DEV MG ---
         ("Preparer escalade N3", "ClickUp: creer tache"),
         ("ClickUp: creer tache", "Preparer alerte DEV MG"),
         ("Preparer alerte DEV MG", "Telegram: alerter techniciens"),
         ("Telegram: alerter techniciens", "Preparer reponse"),
-        ("Preparer reponse", "Est Telegram ?"),
-        ("Est Telegram ?", "Telegram: envoyer reponse", 0),
+        # --- Livraison multi-canal (ticket + non-ticket convergent ici) ---
+        ("Preparer reponse", "Router par canal"),
+        ("Router par canal", "Telegram: envoyer reponse", 0),
+        ("Router par canal", "Email: repondre", 1),
+        ("Router par canal", "Preparer commentaire Jira", 2),
+        ("Router par canal", "Preparer commentaire ClickUp", 3),
+        ("Router par canal", "Canal sans livraison directe", 4),
+        ("Preparer commentaire Jira", "Jira: commenter"),
+        ("Preparer commentaire ClickUp", "ClickUp: commenter"),
+        # --- Audit PG : toutes les livraisons convergent ---
+        ("Telegram: envoyer reponse", "PG: audit reponse"),
+        ("Email: repondre", "PG: audit reponse"),
+        ("Jira: commenter", "PG: audit reponse"),
+        ("ClickUp: commenter", "PG: audit reponse"),
+        ("Canal sans livraison directe", "PG: audit reponse"),
+        # --- Reporting ---
         ("Webhook reporting", "PG: tickets en cours"),
         ("PG: tickets en cours", "Formater le rapport"),
     ]),
