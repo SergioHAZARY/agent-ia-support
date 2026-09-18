@@ -355,18 +355,14 @@ if (!reply) {
   }
 }
 
-// 3. Ajouter le statut en pied de message pour les escalades
-if (status === 'escalated' && reply.indexOf('technicien') === -1) {
-  reply += "\n\n---\nCe probleme necessite l'intervention d'un technicien IT. "
-        + "Reference : " + ticketRef;
-}
-
-// 4. Si escalade N3 avec ClickUp, ajouter la reference de la tache
-if (level === 'N3') {
+// 3. Pour les escalades, toujours ajouter reference ticket + tache ClickUp
+if (status === 'escalated' || level === 'N3') {
+  reply += "\n\n---\n📋 Reference ticket : " + ticketRef;
   try {
     const alertData = $('Preparer alerte DEV MG').item.json;
     if (alertData && alertData.task_url) {
-      reply += "\nUn technicien a ete alerte et une tache a ete creee : " + alertData.task_url;
+      reply += "\n🔗 Tache ClickUp : " + alertData.task_url;
+      reply += "\n✅ Un technicien a ete alerte.";
     }
   } catch(e) { /* pas d'escalade ClickUp (erreur ou autre niveau) */ }
 }
@@ -503,24 +499,27 @@ return [{ json: {
 """.strip()
 
 CLICKUP_ALERT_JS = r"""
-// Construit le message d'alerte pour le groupe Telegram DEV MG apres creation ClickUp.
+// Construit le message d'alerte HTML pour le groupe Telegram DEV MG apres creation ClickUp.
+// HTML au lieu de Markdown : plus robuste si les donnees contiennent * _ [ etc.
 const esc = $('Preparer escalade N3').item.json;
 const cuResp = $json;
 const cuError = cuResp.err || cuResp.error || '';
 const taskId = cuResp.id || '';
 const taskUrl = taskId ? (cuResp.url || ('https://app.clickup.com/t/' + taskId)) : '';
 
-let msg = '⚠️ *ESCALADE AGENT IA*\n\n'
-  + '🆔 *Ticket:* ' + esc.ticketRef + '\n'
-  + '👤 *Demandeur:* ' + esc.sender_raw + '\n'
-  + '📁 *Categorie:* ' + esc.category + '\n'
-  + '🚨 *Priorite:* ' + esc.priority + '\n\n'
-  + '📝 *Resume:* ' + (esc.summary || '').slice(0, 300) + '\n\n'
-  + '❗ *Raison:* ' + esc.escalation_reason;
+function esc_html(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+let msg = '⚠️ <b>ESCALADE AGENT IA</b>\n\n'
+  + '🆔 <b>Ticket:</b> ' + esc_html(esc.ticketRef) + '\n'
+  + '👤 <b>Demandeur:</b> ' + esc_html(esc.sender_raw) + '\n'
+  + '📁 <b>Categorie:</b> ' + esc_html(esc.category) + '\n'
+  + '🚨 <b>Priorite:</b> ' + esc_html(esc.priority) + '\n\n'
+  + '📝 <b>Resume:</b> ' + esc_html((esc.summary || '').slice(0, 300)) + '\n\n'
+  + '❗ <b>Raison:</b> ' + esc_html(esc.escalation_reason);
 if (taskUrl) {
-  msg += '\n\n🔗 *Tache ClickUp:* ' + taskUrl;
+  msg += '\n\n🔗 <b>Tache ClickUp:</b> <a href="' + taskUrl + '">' + esc_html(taskUrl) + '</a>';
 } else if (cuError) {
-  msg += '\n\n⚠️ *ClickUp indisponible* : ' + String(cuError).slice(0, 200);
+  msg += '\n\n⚠️ <b>ClickUp indisponible</b> : ' + esc_html(String(cuError).slice(0, 200));
 }
 
 return [{ json: { alert_text: msg, task_url: taskUrl, task_id: taskId } }];
@@ -861,7 +860,7 @@ nodes = [
         "operation": "sendMessage",
         "chatId": "={{ $vars.TELEGRAM_DEVMG_CHAT_ID || '-5219441607' }}",
         "text": "={{ $json.alert_text }}",
-        "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False}},
+        "additionalFields": {"parse_mode": "HTML", "appendAttribution": False}},
         creds=({"telegramApi": CREDS["telegramApi"]} if "telegramApi" in CREDS else None),
         on_error="continueRegularOutput"),
 
