@@ -656,9 +656,11 @@ const chatType = (msg.chat || {}).type || 'private';
 
 let cmd = 'tickets';
 let groupBy = 'categorie';
+let statusFilter = '';
 
 if (/^\/(start)/.test(text)) cmd = 'start';
 else if (/^\/(help)|aide/.test(text)) cmd = 'help';
+else if (/rapport|report|bilan|synthes/.test(text)) { cmd = 'rapport'; }
 else if (/stats|statistiq/.test(text)) { cmd = 'stats'; }
 else if (/recent|derniers?|24h|nouveau/.test(text)) { cmd = 'recents'; }
 else if (/canal|canaux|plateforme|channel/.test(text)) groupBy = 'canal';
@@ -666,7 +668,11 @@ else if (/departement|societe|tenant|entite/.test(text)) groupBy = 'tenant';
 else if (/priorite|urgence|p1|p2/.test(text)) groupBy = 'priorite';
 else if (/ticket|demande|en.cours|ouvert/.test(text)) cmd = 'tickets';
 
-return [{ json: { cmd, groupBy, chatId, chatType, text } }];
+if (/\b(ouverts?|open)\b/.test(text)) statusFilter = 'ouvert';
+else if (/\b(en.cours|in.progress|traitement)\b/.test(text)) statusFilter = 'en_cours';
+else if (/\b(fini|termin|clos|closed|ferm|resolu|resolved)\b/.test(text)) statusFilter = 'clos';
+
+return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter } }];
 """.strip()
 
 ADMIN_FORMAT_JS = r"""
@@ -689,6 +695,7 @@ if (cmd === 'start') {
     + '<i>tickets par canal</i> — Grouper par plateforme\n'
     + '<i>tickets par priorite</i> — Grouper par priorite\n'
     + '<i>tickets par departement</i> — Grouper par societe\n'
+    + '/rapport — Rapport complet par statut (tous canaux)\n'
     + '/recents — Dernieres demandes (24h)\n'
     + '/stats — Statistiques globales\n'
     + '/help — Cette aide\n\n'
@@ -702,13 +709,101 @@ if (cmd === 'help') {
     + '• <code>tickets par canal</code> — groupes par plateforme (Telegram, Jira, email...)\n'
     + '• <code>tickets par priorite</code> — groupes par urgence\n'
     + '• <code>tickets par departement</code> — groupes par societe\n'
+    + '• <code>rapport</code> — rapport complet par statut (tous canaux)\n'
+    + '• <code>rapport ouverts</code> — uniquement les tickets ouverts\n'
+    + '• <code>rapport en cours</code> — uniquement les tickets en traitement\n'
+    + '• <code>rapport clos</code> — uniquement les tickets termines\n'
     + '• <code>recents</code> — tickets des dernieres 24h\n'
     + '• <code>stats</code> — comptages et repartition';
   return [{ json: { reply } }];
 }
 
+const statusFilter = cmdData.statusFilter || '';
+const statusMap = {
+  'ouvert': ['ouvert','open','nouveau','new'],
+  'en_cours': ['en_cours','in_progress','en cours','attente','pending','escalade'],
+  'clos': ['clos','closed','resolu','resolved','termine','done','annule','cancelled']
+};
+
+function matchStatus(s, filter) {
+  if (!filter) return true;
+  const ls = String(s||'').toLowerCase();
+  return (statusMap[filter]||[]).some(k => ls.includes(k) || ls === k);
+}
+
+const statusLabel = {'ouvert':'🟢 Ouverts','en_cours':'🔵 En cours','clos':'✅ Clos/Termines'};
+const statusIcon = s => {
+  const ls = String(s||'').toLowerCase();
+  if (statusMap.clos.some(k => ls.includes(k))) return '✅';
+  if (statusMap.en_cours.some(k => ls.includes(k))) return '🔵';
+  return '🟢';
+};
+
+// Commande /rapport : rapport complet par statut, canal, categorie
+if (cmd === 'rapport') {
+  let pool = tickets;
+  if (statusFilter) pool = tickets.filter(t => matchStatus(t.status, statusFilter));
+
+  if (pool.length === 0) {
+    reply = '📭 Aucun ticket' + (statusFilter ? ' avec le statut "' + esc(statusFilter) + '"' : '') + '.';
+    return [{ json: { reply } }];
+  }
+
+  const title = statusFilter
+    ? '📊 <b>Rapport — ' + esc(statusLabel[statusFilter] || statusFilter) + '</b>'
+    : '📊 <b>Rapport complet — tous statuts</b>';
+
+  // Compteurs globaux par statut
+  const byStatus = {};
+  for (const t of pool) {
+    const s = t.status || 'inconnu';
+    byStatus[s] = (byStatus[s]||0) + 1;
+  }
+
+  reply = title + ' (' + pool.length + ' tickets)\n\n';
+
+  if (!statusFilter) {
+    reply += '<b>Repartition par statut :</b>\n';
+    for (const [s,n] of Object.entries(byStatus).sort((a,b) => b[1]-a[1]))
+      reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\n';
+    reply += '\n';
+  }
+
+  // Par canal
+  const byPlatform = {};
+  for (const t of pool) {
+    const p = t.platform || 'inconnu';
+    if (!byPlatform[p]) byPlatform[p] = [];
+    byPlatform[p].push(t);
+  }
+  reply += '<b>Par canal :</b>\n';
+  for (const [plat, items] of Object.entries(byPlatform).sort((a,b) => b[1].length - a[1].length)) {
+    reply += '\n📡 <b>' + esc(plat.toUpperCase()) + '</b> (' + items.length + ')\n';
+    for (const t of items.slice(0, 5)) {
+      const p = prioIcon[t.priority] || '⚪';
+      reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '
+        + esc((t.title||'').slice(0,45)) + '\n'
+        + '    ' + esc(t.status||'') + ' | ' + esc(t.category||'') + ' | '
+        + esc(t.tenant_name||'') + ' | ' + esc(t.cree_le||'') + '\n';
+    }
+    if (items.length > 5) reply += '  <i>... et ' + (items.length - 5) + ' autres</i>\n';
+  }
+
+  // Par categorie
+  const byCat = {};
+  for (const t of pool) {
+    const c = t.category || 'autre';
+    byCat[c] = (byCat[c]||0) + 1;
+  }
+  reply += '\n<b>Par categorie :</b>\n';
+  for (const [c,n] of Object.entries(byCat).sort((a,b) => b[1]-a[1]))
+    reply += '  • ' + esc(c) + ' : ' + n + '\n';
+
+  return [{ json: { reply } }];
+}
+
 // Filtrer les recents (created_at < 24h) cote JS
-let filtered = tickets;
+let filtered = tickets.filter(t => !matchStatus(t.status, 'clos'));
 if (cmd === 'recents') {
   const cutoff = new Date(Date.now() - 24*3600*1000).toISOString();
   filtered = tickets.filter(t => (t.cree_le_iso || t.created_at || '') > cutoff);
@@ -847,12 +942,12 @@ PG_ADMIN_TICKETS_SQL = (
     " COALESCE(te.name, 'non attribue') as tenant_name,"
     " COALESCE(ch.platform, 'inconnu') as platform,"
     " to_char(t.created_at, 'DD/MM HH24:MI') as cree_le,"
-    " t.created_at as cree_le_iso"
+    " t.created_at as cree_le_iso,"
+    " to_char(t.updated_at, 'DD/MM HH24:MI') as maj_le"
     " FROM tickets t"
     " LEFT JOIN tenants te ON te.id = t.tenant_id"
     " LEFT JOIN channels ch ON ch.id = t.channel_id"
-    " WHERE t.status NOT IN ('clos', 'annule')"
-    " ORDER BY t.created_at DESC LIMIT 50;")
+    " ORDER BY t.created_at DESC LIMIT 100;")
 
 # Enrichissement du contexte en une seule requete : historique, cas_similaires,
 # runbooks disponibles, et identite du demandeur.
