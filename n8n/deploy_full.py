@@ -88,8 +88,7 @@ def deploy_workflow():
         return None
 
     payload = {k: wf[k] for k in ("name", "nodes", "connections", "settings") if k in wf}
-    # Inclure active:false d'abord pour forcer un changement d'etat au re-toggle
-    payload["active"] = False
+    # Note : active est read-only dans PUT, la gestion se fait dans toggle_workflow
 
     st, body = call("GET", "/workflows", params={"limit": 250})
     all_workflows = []
@@ -127,6 +126,10 @@ def deploy_workflow():
         wf_id = existing[name]
         st, body = call("PUT", f"/workflows/{wf_id}", body=payload)
         print(f"\n  MAJ {name} (id={wf_id}) -> {st}")
+        if st not in (200, 201):
+            print(f"  Detail : {body}")
+            # Le PUT a echoue mais le workflow existe — on continue avec l'ID existant
+            return wf_id
     else:
         st, body = call("POST", "/workflows", body=payload)
         print(f"\n  CREE {name} -> {st}")
@@ -134,6 +137,8 @@ def deploy_workflow():
 
     if isinstance(body, dict) and body.get("id"):
         return body["id"]
+    if wf_id:
+        return wf_id
     print(f"  ERREUR : {body}")
     return None
 
