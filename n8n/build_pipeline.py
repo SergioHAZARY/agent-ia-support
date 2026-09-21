@@ -39,6 +39,10 @@ def node(name, ntype, ver, pos, params=None, creds=None, disabled=False,
          on_error=None):
     n = {"name": name, "type": ntype, "typeVersion": ver, "position": pos,
          "parameters": params or {}}
+    if ntype == "n8n-nodes-base.webhook":
+        import uuid
+        wh_path = (params or {}).get("path", name)
+        n["webhookId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"n8n-webhook:{wh_path}"))
     if creds:
         n["credentials"] = creds
     if disabled:
