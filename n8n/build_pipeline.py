@@ -1803,37 +1803,40 @@ nodes = [
         "headerParameters": {"parameters": [
             {"name": "Content-Type", "value": "application/json"}]}},
         on_error="continueRegularOutput"),
-    node("Preparer CSV binaire", "n8n-nodes-base.code", 2, [1200, 940], {
+    node("Envoyer CSV Telegram", "n8n-nodes-base.code", 2, [1200, 940], {
         "jsCode": r"""
-// Cree un item avec les donnees CSV en binaire pour sendDocument Telegram
+// Envoie le CSV directement a l'API Telegram sendDocument
+const chatId = $json.chatId;
+const caption = $json.reply || '';
 const csvData = $json.csv_data || '';
-const buf = Buffer.from(csvData, 'utf-8');
-const binaryData = await this.helpers.prepareBinaryData(
-  buf,
-  $json.csv_filename || 'tickets_export.csv',
-  'text/csv; charset=utf-8'
-);
-return [{
-  json: { chatId: $json.chatId, reply: $json.reply },
-  binary: { data: binaryData }
-}];
+const filename = $json.csv_filename || 'tickets_export.csv';
+
+// Construire le FormData manuellement
+const boundary = '----n8nCSVBoundary' + Date.now();
+const nl = '\r\n';
+let body = '';
+body += '--' + boundary + nl;
+body += 'Content-Disposition: form-data; name="chat_id"' + nl + nl + chatId + nl;
+body += '--' + boundary + nl;
+body += 'Content-Disposition: form-data; name="caption"' + nl + nl + caption + nl;
+body += '--' + boundary + nl;
+body += 'Content-Disposition: form-data; name="parse_mode"' + nl + nl + 'HTML' + nl;
+body += '--' + boundary + nl;
+body += 'Content-Disposition: form-data; name="document"; filename="' + filename + '"' + nl;
+body += 'Content-Type: text/csv' + nl + nl;
+body += csvData + nl;
+body += '--' + boundary + '--' + nl;
+
+const token = $vars.TELEGRAM_ADMIN_BOT_TOKEN;
+const resp = await this.helpers.httpRequest({
+  method: 'POST',
+  url: 'https://api.telegram.org/bot' + token + '/sendDocument',
+  headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
+  body: body,
+  returnFullResponse: true,
+});
+return [{ json: { ok: true, chatId, sent: resp.statusCode || 200 } }];
 """.strip()}),
-    node("HTTP: envoyer CSV", "n8n-nodes-base.httpRequest", 4.2, [1400, 940], {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendDocument",
-        "sendBody": True,
-        "contentType": "multipart-form-data",
-        "bodyParameters": {"parameters": [
-            {"name": "chat_id", "value": "={{ $json.chatId }}",
-             "parameterType": "formData"},
-            {"name": "caption", "value": "={{ $json.reply }}",
-             "parameterType": "formData"},
-            {"name": "parse_mode", "value": "HTML",
-             "parameterType": "formData"},
-            {"name": "document",
-             "parameterType": "formBinaryData",
-             "inputDataFieldName": "data"}]},
-        "options": {"response": {"response": {"responseFormat": "json"}}}}),
 ]
 
 connections = merge_conn(
@@ -1948,9 +1951,8 @@ connections = merge_conn(
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
         ("Formater admin", "Admin: est-ce un export ?"),
-        ("Admin: est-ce un export ?", "Preparer CSV binaire", 0),
+        ("Admin: est-ce un export ?", "Envoyer CSV Telegram", 0),
         ("Admin: est-ce un export ?", "HTTP: reponse admin", 1),
-        ("Preparer CSV binaire", "HTTP: envoyer CSV"),
     ]),
     conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
 )

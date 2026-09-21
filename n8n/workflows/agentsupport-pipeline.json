@@ -1558,7 +1558,7 @@
       "onError": "continueRegularOutput"
     },
     {
-      "name": "Preparer CSV binaire",
+      "name": "Envoyer CSV Telegram",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -1566,53 +1566,7 @@
         940
       ],
       "parameters": {
-        "jsCode": "// Cree un item avec les donnees CSV en binaire pour sendDocument Telegram\nconst csvData = $json.csv_data || '';\nconst buf = Buffer.from(csvData, 'utf-8');\nconst binaryData = await this.helpers.prepareBinaryData(\n  buf,\n  $json.csv_filename || 'tickets_export.csv',\n  'text/csv; charset=utf-8'\n);\nreturn [{\n  json: { chatId: $json.chatId, reply: $json.reply },\n  binary: { data: binaryData }\n}];"
-      }
-    },
-    {
-      "name": "HTTP: envoyer CSV",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1400,
-        940
-      ],
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendDocument",
-        "sendBody": true,
-        "contentType": "multipart-form-data",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{ $json.chatId }}",
-              "parameterType": "formData"
-            },
-            {
-              "name": "caption",
-              "value": "={{ $json.reply }}",
-              "parameterType": "formData"
-            },
-            {
-              "name": "parse_mode",
-              "value": "HTML",
-              "parameterType": "formData"
-            },
-            {
-              "name": "document",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "data"
-            }
-          ]
-        },
-        "options": {
-          "response": {
-            "response": {
-              "responseFormat": "json"
-            }
-          }
-        }
+        "jsCode": "// Envoie le CSV directement a l'API Telegram sendDocument\nconst chatId = $json.chatId;\nconst caption = $json.reply || '';\nconst csvData = $json.csv_data || '';\nconst filename = $json.csv_filename || 'tickets_export.csv';\n\n// Construire le FormData manuellement\nconst boundary = '----n8nCSVBoundary' + Date.now();\nconst nl = '\\r\\n';\nlet body = '';\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"chat_id\"' + nl + nl + chatId + nl;\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"caption\"' + nl + nl + caption + nl;\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"parse_mode\"' + nl + nl + 'HTML' + nl;\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"document\"; filename=\"' + filename + '\"' + nl;\nbody += 'Content-Type: text/csv' + nl + nl;\nbody += csvData + nl;\nbody += '--' + boundary + '--' + nl;\n\nconst token = $vars.TELEGRAM_ADMIN_BOT_TOKEN;\nconst resp = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://api.telegram.org/bot' + token + '/sendDocument',\n  headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },\n  body: body,\n  returnFullResponse: true,\n});\nreturn [{ json: { ok: true, chatId, sent: resp.statusCode || 200 } }];"
       }
     }
   ],
@@ -2385,7 +2339,7 @@
       "main": [
         [
           {
-            "node": "Preparer CSV binaire",
+            "node": "Envoyer CSV Telegram",
             "type": "main",
             "index": 0
           }
@@ -2393,17 +2347,6 @@
         [
           {
             "node": "HTTP: reponse admin",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Preparer CSV binaire": {
-      "main": [
-        [
-          {
-            "node": "HTTP: envoyer CSV",
             "type": "main",
             "index": 0
           }
