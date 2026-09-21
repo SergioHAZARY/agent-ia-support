@@ -1803,38 +1803,67 @@ nodes = [
         "headerParameters": {"parameters": [
             {"name": "Content-Type", "value": "application/json"}]}},
         on_error="continueRegularOutput"),
-    node("Preparer CSV binaire", "n8n-nodes-base.code", 2, [1100, 940], {
+    node("Envoyer CSV Telegram", "n8n-nodes-base.code", 2, [1200, 940], {
         "jsCode": r"""
+const chatId = String($json.chatId);
+const caption = ($json.reply || '').slice(0, 1024);
 const csvData = $json.csv_data || '';
 const filename = $json.csv_filename || 'tickets_export.csv';
-const buffer = Buffer.from('﻿' + csvData, 'utf-8');
-const binaryData = await this.helpers.prepareBinaryData(buffer, filename, 'text/csv');
-return [{
-  json: {
-    chatId: $json.chatId,
-    caption: ($json.reply || '').slice(0, 1024)
-  },
-  binary: { document: binaryData }
-}];
-""".strip()}),
+const token = $vars.TELEGRAM_ADMIN_BOT_TOKEN;
+const apiUrl = 'https://api.telegram.org/bot' + token;
 
-    node("HTTP: sendDocument CSV", "n8n-nodes-base.httpRequest", 4.2, [1300, 940], {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendDocument",
-        "sendBody": True,
-        "contentType": "multipart-form-data",
-        "bodyParameters": {"parameters": [
-            {"parameterType": "formData", "name": "chat_id",
-             "value": "={{ $json.chatId }}"},
-            {"parameterType": "formData", "name": "caption",
-             "value": "={{ $json.caption }}"},
-            {"parameterType": "formData", "name": "parse_mode",
-             "value": "HTML"},
-            {"parameterType": "formBinaryData", "name": "document",
-             "inputDataFieldName": "document"},
-        ]},
-        "options": {"response": {"response": {"responseFormat": "json"}}}},
-        on_error="continueRegularOutput"),
+const sendMsg = async (text) => {
+  await this.helpers.httpRequest({
+    method: 'POST', url: apiUrl + '/sendMessage',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({chat_id:chatId, text:text.slice(0,4000), parse_mode:'HTML'})
+  });
+};
+
+try {
+  const resp = await this.helpers.request({
+    method: 'POST',
+    uri: apiUrl + '/sendDocument',
+    formData: {
+      chat_id: chatId,
+      caption: caption,
+      parse_mode: 'HTML',
+      document: {
+        value: Buffer.from('﻿' + csvData, 'utf-8'),
+        options: { filename: filename, contentType: 'text/csv' }
+      }
+    }
+  });
+  const r = typeof resp === 'string' ? JSON.parse(resp) : resp;
+  return [{ json: { ok: r.ok, chatId } }];
+} catch (err1) {
+  const e1 = (err1.message || String(err1)).slice(0, 200);
+  try {
+    const boundary = '----n8n' + Date.now();
+    const NL = '\r\n';
+    const body = Buffer.concat([
+      Buffer.from(
+        '--'+boundary+NL+'Content-Disposition: form-data; name="chat_id"'+NL+NL+chatId+NL+
+        '--'+boundary+NL+'Content-Disposition: form-data; name="caption"'+NL+NL+caption+NL+
+        '--'+boundary+NL+'Content-Disposition: form-data; name="parse_mode"'+NL+NL+'HTML'+NL+
+        '--'+boundary+NL+'Content-Disposition: form-data; name="document"; filename="'+filename+'"'+NL+
+        'Content-Type: text/csv'+NL+NL,'utf-8'),
+      Buffer.from('﻿'+csvData,'utf-8'),
+      Buffer.from(NL+'--'+boundary+'--'+NL,'utf-8')
+    ]);
+    const r2 = await this.helpers.httpRequest({
+      method:'POST', url: apiUrl+'/sendDocument',
+      headers:{'Content-Type':'multipart/form-data; boundary='+boundary},
+      body: body, encoding: null, returnFullResponse: true
+    });
+    return [{json:{ok:true, method:'buffer', status: r2.statusCode||200}}];
+  } catch (err2) {
+    const e2 = (err2.message || String(err2)).slice(0, 200);
+    await sendMsg('⚠️ Export echoue.\nMethode 1: '+e1+'\nMethode 2: '+e2);
+    return [{json:{ok:false, error1:e1, error2:e2}}];
+  }
+}
+""".strip()}),
 ]
 
 connections = merge_conn(
@@ -1949,8 +1978,7 @@ connections = merge_conn(
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
         ("Formater admin", "Admin: est-ce un export ?"),
-        ("Admin: est-ce un export ?", "Preparer CSV binaire", 0),
-        ("Preparer CSV binaire", "HTTP: sendDocument CSV"),
+        ("Admin: est-ce un export ?", "Envoyer CSV Telegram", 0),
         ("Admin: est-ce un export ?", "HTTP: reponse admin", 1),
     ]),
     conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
