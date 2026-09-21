@@ -1105,31 +1105,70 @@ def pg_node(name, pos, sql, repl_expr):
 # Generateurs de noeuds multicanal
 # --------------------------------------------------------------------------- #
 
-# --- Boites IMAP (Outlook / Email) ---
-IMAP_MAILBOXES = [
-    {"key": "imapBazarchic",      "label": "IMAP Bazarchic",
+# --- Boites Email (Microsoft Outlook OAuth2 ou IMAP) ---
+# On utilise le noeud Microsoft Outlook Trigger (OAuth2) de n8n qui gere
+# l'authentification via une fenetre de connexion interactive — pas besoin
+# d'app passwords ni de configuration MFA. Chaque credential est creee
+# dans n8n : Settings > Credentials > Microsoft Outlook OAuth2 API.
+# Si la credential n'a pas d'id dans credentials.json, le noeud est desactive.
+EMAIL_ACCOUNTS = [
+    {"key": "outlookBazarchic",    "label": "Outlook Bazarchic",
      "mailbox": "itsupport@bazarchic.com"},
-    {"key": "imapBeautyBay",      "label": "IMAP BeautyBay",
+    {"key": "outlookBeautyBay",    "label": "Outlook BeautyBay",
      "mailbox": "itsupport@beautybay.com"},
-    {"key": "imapAtlasForMen",    "label": "IMAP AtlasForMen",
+    {"key": "outlookAtlasForMen",  "label": "Outlook AtlasForMen",
      "mailbox": "thaina_aa@atlasformen.com"},
-    {"key": "imapFrancoisSaget",  "label": "IMAP FrancoisSaget",
+    {"key": "outlookFrancoisSaget","label": "Outlook FrancoisSaget",
      "mailbox": "support-it@francoisesaget.com"},
-    {"key": "imapRegardBeauty",   "label": "IMAP RegardBeauty",
+    {"key": "outlookRegardBeauty", "label": "Outlook RegardBeauty",
      "mailbox": "support-odoo@regardbeauty.onmicrosoft.com"},
 ]
 
+# JS qui normalise un email Microsoft Outlook Trigger vers le format du pipeline.
+OUTLOOK_NORMALIZE_JS = r"""
+// Normalise un email Microsoft Outlook vers le format pipeline.
+// Le noeud Outlook Trigger fournit : subject, bodyPreview, from, toRecipients, etc.
+const mail = $json;
+const fromAddr = ((mail.from || {}).emailAddress || {}).address || '';
+const fromName = ((mail.from || {}).emailAddress || {}).name || '';
+const toList = mail.toRecipients || [];
+const toAddr = toList.length > 0 ? (toList[0].emailAddress || {}).address || '' : '';
+const body = mail.bodyPreview || mail.body?.content || '';
+const subject = mail.subject || '';
+
+return [{json: {
+  textPlain: body,
+  subject: subject,
+  messageId: mail.id || mail.internetMessageId || '',
+  uid: mail.id || '',
+  from: { value: [{ address: fromAddr, name: fromName }] },
+  to: { value: [{ address: toAddr.toLowerCase() }] }
+}}];
+""".strip()
+
 
 def _imap_nodes():
-    """Genere un noeud IMAP par boite mail. Desactive si pas de credential."""
+    """Genere un noeud Microsoft Outlook Trigger + normalisation par boite mail."""
     result = []
-    for i, mb in enumerate(IMAP_MAILBOXES):
-        y = 380 + i * 70
+    for i, mb in enumerate(EMAIL_ACCOUNTS):
+        y = 380 + i * 80
         has_cred = mb["key"] in CREDS and CREDS[mb["key"]].get("id")
+        trigger_name = f"Outlook: {mb['label']}"
+        normalize_name = f"Norm: {mb['label']}"
+        # Microsoft Outlook Trigger (polling via Graph API, OAuth2)
         result.append(node(
-            f"Email: {mb['label']}", "n8n-nodes-base.emailReadImap", 2, [-60, y],
-            {"mailbox": "INBOX", "options": {"allowUnauthorizedCerts": True}},
-            creds=({"imap": CREDS[mb["key"]]} if has_cred else None),
+            trigger_name,
+            "n8n-nodes-base.microsoftOutlookTrigger", 1, [-60, y],
+            {"event": "messageReceived",
+             "simple": False},
+            creds=({"microsoftOutlookOAuth2Api": CREDS[mb["key"]]}
+                   if has_cred else None),
+            disabled=(not has_cred),
+        ))
+        # Code node pour normaliser vers le format attendu par le pipeline
+        result.append(node(
+            normalize_name, "n8n-nodes-base.code", 2, [120, y],
+            {"jsCode": OUTLOOK_NORMALIZE_JS},
             disabled=(not has_cred),
         ))
     return result
@@ -1604,8 +1643,9 @@ connections = merge_conn(
         ("Webhook Jira", "Normaliser (multicanal)"),
         ("Webhook Teams", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
-        # --- IMAP (5 boites Outlook/Email) → Normalisation ---
-        *[(f"Email: {mb['label']}", "Normaliser (multicanal)") for mb in IMAP_MAILBOXES],
+        # --- Outlook OAuth2 (5 boites) → Norm → Normalisation ---
+        *[(f"Outlook: {mb['label']}", f"Norm: {mb['label']}") for mb in EMAIL_ACCOUNTS],
+        *[(f"Norm: {mb['label']}", "Normaliser (multicanal)") for mb in EMAIL_ACCOUNTS],
         # --- Jira Polling → Parse → Normalisation ---
         *[(f"Schedule: {ji['label']}", f"Poll: {ji['label']}") for ji in JIRA_INSTANCES],
         *[(f"Poll: {ji['label']}", f"Parse: {ji['label']}") for ji in JIRA_INSTANCES],

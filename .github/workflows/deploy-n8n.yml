@@ -14,8 +14,8 @@ name: Deploy n8n
 # Secrets optionnels supplémentaires :
 #   CLICKUP_API_TOKEN          (crée la variable n8n pour l'escalade N3)
 #   TELEGRAM_ADMIN_BOT_TOKEN   (crée la credential Telegram du bot admin)
-#   IMAP_*_USER / IMAP_*_PASS  (credentials IMAP pour chaque boîte Outlook)
 #   JIRA_BEAUTYBAY_USER/TOKEN  (credential Jira BeautyBay HTTP Basic)
+#   Les credentials Outlook OAuth2 se créent dans l'interface n8n (pas par CI).
 
 on:
   push:
@@ -43,17 +43,6 @@ jobs:
           CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ADMIN_BOT_TOKEN: ${{ secrets.TELEGRAM_ADMIN_BOT_TOKEN }}
-          # IMAP Outlook (un couple USER/PASS par boîte)
-          IMAP_BAZARCHIC_USER: ${{ secrets.IMAP_BAZARCHIC_USER }}
-          IMAP_BAZARCHIC_PASS: ${{ secrets.IMAP_BAZARCHIC_PASS }}
-          IMAP_BEAUTYBAY_USER: ${{ secrets.IMAP_BEAUTYBAY_USER }}
-          IMAP_BEAUTYBAY_PASS: ${{ secrets.IMAP_BEAUTYBAY_PASS }}
-          IMAP_ATLASFORMEN_USER: ${{ secrets.IMAP_ATLASFORMEN_USER }}
-          IMAP_ATLASFORMEN_PASS: ${{ secrets.IMAP_ATLASFORMEN_PASS }}
-          IMAP_FSAGET_USER: ${{ secrets.IMAP_FSAGET_USER }}
-          IMAP_FSAGET_PASS: ${{ secrets.IMAP_FSAGET_PASS }}
-          IMAP_REGARDBEAUTY_USER: ${{ secrets.IMAP_REGARDBEAUTY_USER }}
-          IMAP_REGARDBEAUTY_PASS: ${{ secrets.IMAP_REGARDBEAUTY_PASS }}
           # Jira BeautyBay
           JIRA_BEAUTYBAY_USER: ${{ secrets.JIRA_BEAUTYBAY_USER }}
           JIRA_BEAUTYBAY_TOKEN: ${{ secrets.JIRA_BEAUTYBAY_TOKEN }}

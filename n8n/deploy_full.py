@@ -187,29 +187,22 @@ def update_credentials_json(updates):
             f.write("\n")
 
 
-# --- Credentials IMAP pour les boites Outlook/Email ---
-IMAP_ACCOUNTS = [
-    {"json_key": "imapBazarchic",      "name": "IMAP Bazarchic",
-     "env_user": "IMAP_BAZARCHIC_USER",      "env_pass": "IMAP_BAZARCHIC_PASS",
-     "host": "outlook.office365.com", "default_user": "itsupport@bazarchic.com"},
-    {"json_key": "imapBeautyBay",      "name": "IMAP BeautyBay",
-     "env_user": "IMAP_BEAUTYBAY_USER",      "env_pass": "IMAP_BEAUTYBAY_PASS",
-     "host": "outlook.office365.com", "default_user": "itsupport@beautybay.com"},
-    {"json_key": "imapAtlasForMen",    "name": "IMAP AtlasForMen",
-     "env_user": "IMAP_ATLASFORMEN_USER",    "env_pass": "IMAP_ATLASFORMEN_PASS",
-     "host": "outlook.office365.com", "default_user": "thaina_aa@atlasformen.com"},
-    {"json_key": "imapFrancoisSaget",  "name": "IMAP FrancoisSaget",
-     "env_user": "IMAP_FSAGET_USER",         "env_pass": "IMAP_FSAGET_PASS",
-     "host": "outlook.office365.com", "default_user": "support-it@francoisesaget.com"},
-    {"json_key": "imapRegardBeauty",   "name": "IMAP RegardBeauty",
-     "env_user": "IMAP_REGARDBEAUTY_USER",   "env_pass": "IMAP_REGARDBEAUTY_PASS",
-     "host": "outlook.office365.com", "default_user": "support-odoo@regardbeauty.onmicrosoft.com"},
+# --- Credentials Outlook OAuth2 pour les boites email ---
+# Les credentials Microsoft Outlook OAuth2 se creent DANS l'interface n8n
+# (flux interactif avec fenetre de connexion Microsoft).
+# Cette fonction detecte celles qui existent deja et met a jour credentials.json.
+OUTLOOK_ACCOUNTS = [
+    {"json_key": "outlookBazarchic",    "name": "Outlook Bazarchic"},
+    {"json_key": "outlookBeautyBay",    "name": "Outlook BeautyBay"},
+    {"json_key": "outlookAtlasForMen",  "name": "Outlook AtlasForMen"},
+    {"json_key": "outlookFrancoisSaget","name": "Outlook FrancoisSaget"},
+    {"json_key": "outlookRegardBeauty", "name": "Outlook RegardBeauty"},
 ]
 
 
-def ensure_imap_credentials():
-    """Cree les credentials IMAP pour chaque boite mail si absentes."""
-    print("\n=== Credentials IMAP (Outlook/Email) ===")
+def discover_outlook_credentials():
+    """Detecte les credentials Outlook OAuth2 deja creees dans n8n."""
+    print("\n=== Credentials Outlook OAuth2 ===")
     st, body = call("GET", "/credentials", params={"limit": 200})
     existing = {}
     creds_list = body.get("data", body) if isinstance(body, dict) else (body if isinstance(body, list) else [])
@@ -217,36 +210,21 @@ def ensure_imap_credentials():
         existing[c.get("name")] = c
 
     results = {}
-    for acct in IMAP_ACCOUNTS:
+    missing = []
+    for acct in OUTLOOK_ACCOUNTS:
         cred_name = acct["name"]
         if cred_name in existing:
-            print(f"  OK  {cred_name} (deja presente, id={existing[cred_name]['id']})")
+            print(f"  OK  {cred_name} (id={existing[cred_name]['id']})")
             results[acct["json_key"]] = {"id": existing[cred_name]["id"], "name": cred_name}
-            continue
-
-        user = os.environ.get(acct["env_user"], acct["default_user"])
-        password = os.environ.get(acct["env_pass"], "")
-        if not password:
-            print(f"  SKIP {cred_name} (pas de {acct['env_pass']}, a creer manuellement dans n8n)")
-            continue
-
-        payload = {
-            "name": cred_name,
-            "type": "imap",
-            "data": {
-                "host": acct["host"],
-                "port": 993,
-                "secure": True,
-                "user": user,
-                "password": password,
-            },
-        }
-        st2, r = call("POST", "/credentials", body=payload)
-        if st2 in (200, 201) and isinstance(r, dict) and r.get("id"):
-            print(f"  CREE {cred_name} -> id={r['id']}")
-            results[acct["json_key"]] = {"id": r["id"], "name": cred_name}
         else:
-            print(f"  ERREUR {cred_name} : {st2} {str(r)[:200]}")
+            print(f"  MANQUE {cred_name} -> a creer dans n8n : Credentials > Microsoft Outlook OAuth2 API")
+            missing.append(cred_name)
+
+    if missing:
+        print(f"\n  ⚠ {len(missing)} credential(s) Outlook a creer manuellement dans n8n.")
+        print("  Procedure : n8n > Settings > Credentials > Add Credential")
+        print("    > Microsoft Outlook OAuth2 API > Connect > se connecter avec le compte")
+        print("    > Renommer la credential exactement comme indique ci-dessus.")
     return results
 
 
@@ -294,8 +272,8 @@ def main():
     if admin_cred:
         cred_updates["telegramAdminApi"] = admin_cred
 
-    imap_creds = ensure_imap_credentials()
-    cred_updates.update(imap_creds)
+    outlook_creds = discover_outlook_credentials()
+    cred_updates.update(outlook_creds)
 
     jira_bb = ensure_jira_beautybay_credential()
     if jira_bb:

@@ -52,82 +52,137 @@
       }
     },
     {
-      "name": "Email: IMAP Bazarchic",
-      "type": "n8n-nodes-base.emailReadImap",
-      "typeVersion": 2,
+      "name": "Outlook: Outlook Bazarchic",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
       "position": [
         -60,
         380
       ],
       "parameters": {
-        "mailbox": "INBOX",
-        "options": {
-          "allowUnauthorizedCerts": true
-        }
+        "event": "messageReceived",
+        "simple": false
       },
       "disabled": true
     },
     {
-      "name": "Email: IMAP BeautyBay",
-      "type": "n8n-nodes-base.emailReadImap",
+      "name": "Norm: Outlook Bazarchic",
+      "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -60,
-        450
+        120,
+        380
       ],
       "parameters": {
-        "mailbox": "INBOX",
-        "options": {
-          "allowUnauthorizedCerts": true
-        }
+        "jsCode": "// Normalise un email Microsoft Outlook vers le format pipeline.\n// Le noeud Outlook Trigger fournit : subject, bodyPreview, from, toRecipients, etc.\nconst mail = $json;\nconst fromAddr = ((mail.from || {}).emailAddress || {}).address || '';\nconst fromName = ((mail.from || {}).emailAddress || {}).name || '';\nconst toList = mail.toRecipients || [];\nconst toAddr = toList.length > 0 ? (toList[0].emailAddress || {}).address || '' : '';\nconst body = mail.bodyPreview || mail.body?.content || '';\nconst subject = mail.subject || '';\n\nreturn [{json: {\n  textPlain: body,\n  subject: subject,\n  messageId: mail.id || mail.internetMessageId || '',\n  uid: mail.id || '',\n  from: { value: [{ address: fromAddr, name: fromName }] },\n  to: { value: [{ address: toAddr.toLowerCase() }] }\n}}];"
       },
       "disabled": true
     },
     {
-      "name": "Email: IMAP AtlasForMen",
-      "type": "n8n-nodes-base.emailReadImap",
-      "typeVersion": 2,
+      "name": "Outlook: Outlook BeautyBay",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
       "position": [
         -60,
-        520
+        460
       ],
       "parameters": {
-        "mailbox": "INBOX",
-        "options": {
-          "allowUnauthorizedCerts": true
-        }
+        "event": "messageReceived",
+        "simple": false
       },
       "disabled": true
     },
     {
-      "name": "Email: IMAP FrancoisSaget",
-      "type": "n8n-nodes-base.emailReadImap",
+      "name": "Norm: Outlook BeautyBay",
+      "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -60,
-        590
+        120,
+        460
       ],
       "parameters": {
-        "mailbox": "INBOX",
-        "options": {
-          "allowUnauthorizedCerts": true
-        }
+        "jsCode": "// Normalise un email Microsoft Outlook vers le format pipeline.\n// Le noeud Outlook Trigger fournit : subject, bodyPreview, from, toRecipients, etc.\nconst mail = $json;\nconst fromAddr = ((mail.from || {}).emailAddress || {}).address || '';\nconst fromName = ((mail.from || {}).emailAddress || {}).name || '';\nconst toList = mail.toRecipients || [];\nconst toAddr = toList.length > 0 ? (toList[0].emailAddress || {}).address || '' : '';\nconst body = mail.bodyPreview || mail.body?.content || '';\nconst subject = mail.subject || '';\n\nreturn [{json: {\n  textPlain: body,\n  subject: subject,\n  messageId: mail.id || mail.internetMessageId || '',\n  uid: mail.id || '',\n  from: { value: [{ address: fromAddr, name: fromName }] },\n  to: { value: [{ address: toAddr.toLowerCase() }] }\n}}];"
       },
       "disabled": true
     },
     {
-      "name": "Email: IMAP RegardBeauty",
-      "type": "n8n-nodes-base.emailReadImap",
-      "typeVersion": 2,
+      "name": "Outlook: Outlook AtlasForMen",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
       "position": [
         -60,
-        660
+        540
       ],
       "parameters": {
-        "mailbox": "INBOX",
-        "options": {
-          "allowUnauthorizedCerts": true
-        }
+        "event": "messageReceived",
+        "simple": false
+      },
+      "disabled": true
+    },
+    {
+      "name": "Norm: Outlook AtlasForMen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        540
+      ],
+      "parameters": {
+        "jsCode": "// Normalise un email Microsoft Outlook vers le format pipeline.\n// Le noeud Outlook Trigger fournit : subject, bodyPreview, from, toRecipients, etc.\nconst mail = $json;\nconst fromAddr = ((mail.from || {}).emailAddress || {}).address || '';\nconst fromName = ((mail.from || {}).emailAddress || {}).name || '';\nconst toList = mail.toRecipients || [];\nconst toAddr = toList.length > 0 ? (toList[0].emailAddress || {}).address || '' : '';\nconst body = mail.bodyPreview || mail.body?.content || '';\nconst subject = mail.subject || '';\n\nreturn [{json: {\n  textPlain: body,\n  subject: subject,\n  messageId: mail.id || mail.internetMessageId || '',\n  uid: mail.id || '',\n  from: { value: [{ address: fromAddr, name: fromName }] },\n  to: { value: [{ address: toAddr.toLowerCase() }] }\n}}];"
+      },
+      "disabled": true
+    },
+    {
+      "name": "Outlook: Outlook FrancoisSaget",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        620
+      ],
+      "parameters": {
+        "event": "messageReceived",
+        "simple": false
+      },
+      "disabled": true
+    },
+    {
+      "name": "Norm: Outlook FrancoisSaget",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        620
+      ],
+      "parameters": {
+        "jsCode": "// Normalise un email Microsoft Outlook vers le format pipeline.\n// Le noeud Outlook Trigger fournit : subject, bodyPreview, from, toRecipients, etc.\nconst mail = $json;\nconst fromAddr = ((mail.from || {}).emailAddress || {}).address || '';\nconst fromName = ((mail.from || {}).emailAddress || {}).name || '';\nconst toList = mail.toRecipients || [];\nconst toAddr = toList.length > 0 ? (toList[0].emailAddress || {}).address || '' : '';\nconst body = mail.bodyPreview || mail.body?.content || '';\nconst subject = mail.subject || '';\n\nreturn [{json: {\n  textPlain: body,\n  subject: subject,\n  messageId: mail.id || mail.internetMessageId || '',\n  uid: mail.id || '',\n  from: { value: [{ address: fromAddr, name: fromName }] },\n  to: { value: [{ address: toAddr.toLowerCase() }] }\n}}];"
+      },
+      "disabled": true
+    },
+    {
+      "name": "Outlook: Outlook RegardBeauty",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        700
+      ],
+      "parameters": {
+        "event": "messageReceived",
+        "simple": false
+      },
+      "disabled": true
+    },
+    {
+      "name": "Norm: Outlook RegardBeauty",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Normalise un email Microsoft Outlook vers le format pipeline.\n// Le noeud Outlook Trigger fournit : subject, bodyPreview, from, toRecipients, etc.\nconst mail = $json;\nconst fromAddr = ((mail.from || {}).emailAddress || {}).address || '';\nconst fromName = ((mail.from || {}).emailAddress || {}).name || '';\nconst toList = mail.toRecipients || [];\nconst toAddr = toList.length > 0 ? (toList[0].emailAddress || {}).address || '' : '';\nconst body = mail.bodyPreview || mail.body?.content || '';\nconst subject = mail.subject || '';\n\nreturn [{json: {\n  textPlain: body,\n  subject: subject,\n  messageId: mail.id || mail.internetMessageId || '',\n  uid: mail.id || '',\n  from: { value: [{ address: fromAddr, name: fromName }] },\n  to: { value: [{ address: toAddr.toLowerCase() }] }\n}}];"
       },
       "disabled": true
     },
@@ -1640,7 +1695,62 @@
         ]
       ]
     },
-    "Email: IMAP Bazarchic": {
+    "Outlook: Outlook Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Norm: Outlook Bazarchic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outlook: Outlook BeautyBay": {
+      "main": [
+        [
+          {
+            "node": "Norm: Outlook BeautyBay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outlook: Outlook AtlasForMen": {
+      "main": [
+        [
+          {
+            "node": "Norm: Outlook AtlasForMen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outlook: Outlook FrancoisSaget": {
+      "main": [
+        [
+          {
+            "node": "Norm: Outlook FrancoisSaget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outlook: Outlook RegardBeauty": {
+      "main": [
+        [
+          {
+            "node": "Norm: Outlook RegardBeauty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Norm: Outlook Bazarchic": {
       "main": [
         [
           {
@@ -1651,7 +1761,7 @@
         ]
       ]
     },
-    "Email: IMAP BeautyBay": {
+    "Norm: Outlook BeautyBay": {
       "main": [
         [
           {
@@ -1662,7 +1772,7 @@
         ]
       ]
     },
-    "Email: IMAP AtlasForMen": {
+    "Norm: Outlook AtlasForMen": {
       "main": [
         [
           {
@@ -1673,7 +1783,7 @@
         ]
       ]
     },
-    "Email: IMAP FrancoisSaget": {
+    "Norm: Outlook FrancoisSaget": {
       "main": [
         [
           {
@@ -1684,7 +1794,7 @@
         ]
       ]
     },
-    "Email: IMAP RegardBeauty": {
+    "Norm: Outlook RegardBeauty": {
       "main": [
         [
           {
