@@ -90,18 +90,44 @@ def deploy_workflow():
     payload = {k: wf[k] for k in ("name", "nodes", "connections", "settings") if k in wf}
 
     st, body = call("GET", "/workflows", params={"limit": 250})
-    existing = {}
+    all_workflows = []
     if isinstance(body, dict):
-        for w in body.get("data", []):
-            existing[w.get("name")] = w.get("id")
+        all_workflows = body.get("data", [])
+    elif isinstance(body, list):
+        all_workflows = body
+
+    # Diagnostic : lister tous les workflows
+    print(f"\n  --- Workflows trouves ({len(all_workflows)}) ---")
+    existing = {}
+    duplicates = []
+    for w in all_workflows:
+        wname = w.get("name", "?")
+        wid = w.get("id", "?")
+        active = w.get("active", False)
+        tags = [t.get("name", "") for t in w.get("tags", [])]
+        project = w.get("homeProject", {}).get("name", "?") if w.get("homeProject") else "?"
+        print(f"    {wname} | id={wid} | active={active} | project={project}")
+        if wname == name:
+            duplicates.append(w)
+        if wname.startswith(PREFIX):
+            existing[wname] = wid
+
+    if len(duplicates) > 1:
+        print(f"\n  ⚠ DOUBLON : {len(duplicates)} workflows nommes '{name}'")
+        # Garder le plus recent, supprimer les autres
+        duplicates.sort(key=lambda w: w.get("updatedAt", ""), reverse=True)
+        for dup in duplicates[1:]:
+            print(f"    Suppression doublon id={dup['id']} (ancien)")
+            call("DELETE", f"/workflows/{dup['id']}")
+        existing[name] = duplicates[0]["id"]
 
     if name in existing:
         wf_id = existing[name]
         st, body = call("PUT", f"/workflows/{wf_id}", body=payload)
-        print(f"  MAJ {name} -> {st}")
+        print(f"\n  MAJ {name} (id={wf_id}) -> {st}")
     else:
         st, body = call("POST", "/workflows", body=payload)
-        print(f"  CREE {name} -> {st}")
+        print(f"\n  CREE {name} -> {st}")
         wf_id = body.get("id") if isinstance(body, dict) else None
 
     if isinstance(body, dict) and body.get("id"):
@@ -113,17 +139,20 @@ def deploy_workflow():
 # ---- 3. Toggle workflow (off/on) pour re-enregistrer les webhooks -----------
 def toggle_workflow(wf_id):
     print("\n=== Activation workflow (toggle off/on pour webhooks) ===")
-    # n8n cloud : POST /workflows/{id}/activate et /deactivate
+    # Essayer les deux methodes : POST (n8n >= 1.x) et PATCH (fallback).
+    # Sur n8n cloud, POST /activate retourne 200 mais n'enregistre pas
+    # toujours les webhooks. On tente PATCH en plus pour forcer.
     st1, _ = call("POST", f"/workflows/{wf_id}/deactivate")
-    if st1 in (404, 405):
-        # Fallback API v1 : PATCH avec body
+    if st1 not in (200, 201):
         st1, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": False})
     print(f"  Desactive -> {st1}")
-    st2, _ = call("POST", f"/workflows/{wf_id}/activate")
-    if st2 in (404, 405):
-        st2, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
+    import time; time.sleep(2)
+    # Activer via PATCH (force la re-creation des webhooks sur n8n cloud)
+    st2, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
+    if st2 not in (200, 201):
+        st2, _ = call("POST", f"/workflows/{wf_id}/activate")
     print(f"  Active    -> {st2}")
-    if st2 == 200:
+    if st2 in (200, 201):
         print("  OK : workflow actif, webhooks re-enregistres")
     else:
         print("  ATTENTION : activer manuellement dans l'editeur n8n")
