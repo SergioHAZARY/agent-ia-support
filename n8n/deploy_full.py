@@ -147,31 +147,74 @@ def deploy_workflow():
 def toggle_workflow(wf_id):
     print("\n=== Activation workflow (toggle off/on pour webhooks) ===")
     import time
-    # Le PUT a deja mis active:false. On s'assure que l'etat est bien inactif.
     st1, r1 = call("POST", f"/workflows/{wf_id}/deactivate")
     if st1 not in (200, 201):
         st1, r1 = call("PATCH", f"/workflows/{wf_id}", body={"active": False})
     print(f"  Desactive -> {st1}")
-    time.sleep(3)
-    # Activer via POST (methode principale sur n8n cloud)
+    time.sleep(5)
     st2, r2 = call("POST", f"/workflows/{wf_id}/activate")
     print(f"  POST activate -> {st2}")
-    # Verifier le statut reel
+    if st2 not in (200, 201):
+        st2b, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
+        print(f"  Fallback PATCH active:true -> {st2b}")
+        time.sleep(3)
     st3, r3 = call("GET", f"/workflows/{wf_id}")
     real_active = r3.get("active", "?") if isinstance(r3, dict) else "?"
     print(f"  Statut reel apres toggle : active={real_active}")
-    if not real_active:
-        # Fallback: PATCH
-        st4, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
-        print(f"  Fallback PATCH active:true -> {st4}")
-        time.sleep(2)
-        st5, r5 = call("GET", f"/workflows/{wf_id}")
-        real2 = r5.get("active", "?") if isinstance(r5, dict) else "?"
-        print(f"  Statut reel apres fallback : active={real2}")
     if real_active:
         print("  OK : workflow actif")
     else:
         print("  ATTENTION : activer manuellement dans l'editeur n8n")
+    return real_active
+
+
+def test_webhooks():
+    """Teste les URLs webhook pour verifier qu'ils sont enregistres."""
+    print("\n=== Test webhooks (apres activation) ===")
+    import time
+    time.sleep(8)
+    base_url = os.environ.get("N8N_BASE_URL", "").rstrip("/")
+    if not base_url:
+        print("  SKIP (pas de N8N_BASE_URL)")
+        return
+
+    webhooks = [
+        ("agent-support", "POST"),
+        ("agent-support-email", "POST"),
+        ("agent-support-jira", "POST"),
+        ("agent-support-teams", "POST"),
+        ("agent-support-reporting", "GET"),
+    ]
+    ok_count = 0
+    for path, method in webhooks:
+        url = f"{base_url}/webhook/{path}"
+        try:
+            data = b'{"test": true}' if method == "POST" else None
+            req = urllib.request.Request(url, data=data, method=method)
+            if method == "POST":
+                req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                print(f"  {method} /webhook/{path} -> {r.status} OK")
+                ok_count += 1
+        except urllib.error.HTTPError as e:
+            status = e.code
+            body_preview = e.read().decode()[:200]
+            if status == 404:
+                print(f"  {method} /webhook/{path} -> 404 NOT FOUND")
+            else:
+                print(f"  {method} /webhook/{path} -> {status} ({body_preview})")
+                if status != 404:
+                    ok_count += 1
+        except Exception as exc:
+            print(f"  {method} /webhook/{path} -> ERREUR : {exc}")
+
+    print(f"\n  Resultat : {ok_count}/{len(webhooks)} webhooks repondent")
+    if ok_count == 0:
+        print("  ⚠ AUCUN webhook ne repond.")
+        print("  Action requise : toggler le workflow OFF puis ON dans l'editeur n8n.")
+        print("  L'API REST d'activation ne semble pas enregistrer les webhooks sur n8n cloud.")
+    elif ok_count < len(webhooks):
+        print("  ⚠ Certains webhooks ne repondent pas — verifier dans l'editeur n8n.")
 
 
 def ensure_admin_credential():
@@ -193,12 +236,28 @@ def ensure_admin_credential():
         return None
 
     cred_name = "Telegram Admin Bot"
-    st, body = call("GET", "/credentials", params={"limit": 200})
+    st, body = call("GET", "/credentials", params={"limit": 500})
     creds = body.get("data", body) if isinstance(body, dict) else (body if isinstance(body, list) else [])
+    print(f"  Credentials trouvees : {len(creds)}")
+    matches = []
     for c in creds:
-        if c.get("name") == cred_name:
-            print(f"  OK  {cred_name} (deja presente, id={c['id']})")
-            return {"id": c["id"], "name": cred_name}
+        cname = c.get("name", "")
+        ctype = c.get("type", "")
+        if cname == cred_name:
+            matches.append(c)
+            print(f"    MATCH : {cname} | id={c['id']} | type={ctype}")
+        elif "admin" in cname.lower() or "telegram" in cname.lower():
+            print(f"    (voisin) : {cname} | id={c['id']} | type={ctype}")
+
+    if matches:
+        chosen = matches[0]
+        print(f"  OK  {cred_name} (deja presente, id={chosen['id']})")
+        if len(matches) > 1:
+            print(f"  ⚠ {len(matches)} doublons trouves — garder id={chosen['id']}, nettoyer les autres")
+            for dup in matches[1:]:
+                call("DELETE", f"/credentials/{dup['id']}")
+                print(f"    Supprime doublon id={dup['id']}")
+        return {"id": chosen["id"], "name": cred_name}
 
     payload = {
         "name": cred_name,
@@ -337,7 +396,8 @@ def main():
 
     wf_id = deploy_workflow()
     if wf_id:
-        toggle_workflow(wf_id)
+        active = toggle_workflow(wf_id)
+        test_webhooks()
     print("\n=== Termine ===")
 
 
