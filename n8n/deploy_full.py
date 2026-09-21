@@ -75,9 +75,10 @@ def ensure_variables():
 
 # ---- 2. Deploy workflow ------------------------------------------------------
 def deploy_workflow():
-    """Deploie le workflow en DELETE+CREATE (pas PUT) pour forcer l'enregistrement
-    des webhooks sur n8n cloud. L'API PUT+activate ne registre pas les routes."""
-    print("\n=== Deploiement workflow (delete+create pour webhooks) ===")
+    """Deploie le workflow par PUT (upsert). Sur n8n cloud, l'API activate ne
+    registre PAS les routes webhook — mais PUT preserve celles deja enregistrees
+    depuis l'editeur n8n. Apres un premier deploy, toggler OFF/ON dans l'editeur."""
+    print("\n=== Deploiement workflow ===")
     wf_path = os.path.join(HERE, "workflows", "agentsupport-pipeline.json")
     if not os.path.exists(wf_path):
         print("  ERREUR : fichier workflow introuvable, lancer build_pipeline.py d'abord")
@@ -98,8 +99,8 @@ def deploy_workflow():
     elif isinstance(body, list):
         all_workflows = body
 
-    print(f"\n  --- Workflows trouves ({len(all_workflows)}) ---")
-    matches = []
+    existing = {}
+    duplicates = []
     for w in all_workflows:
         wname = w.get("name", "?")
         wid = w.get("id", "?")
@@ -107,26 +108,34 @@ def deploy_workflow():
         if wname.startswith(PREFIX):
             print(f"    {wname} | id={wid} | active={active}")
         if wname == name:
-            matches.append(w)
+            duplicates.append(w)
+        if wname.startswith(PREFIX):
+            existing[wname] = wid
 
-    # Supprimer TOUS les workflows existants avec ce nom
-    for m in matches:
-        old_id = m["id"]
-        # Desactiver d'abord si actif
-        if m.get("active"):
-            call("POST", f"/workflows/{old_id}/deactivate")
-        st_del, _ = call("DELETE", f"/workflows/{old_id}")
-        print(f"\n  DELETE ancien {name} (id={old_id}) -> {st_del}")
+    if len(duplicates) > 1:
+        print(f"\n  ⚠ DOUBLON : {len(duplicates)} workflows nommes '{name}'")
+        duplicates.sort(key=lambda w: w.get("updatedAt", ""), reverse=True)
+        for dup in duplicates[1:]:
+            print(f"    Suppression doublon id={dup['id']}")
+            call("DELETE", f"/workflows/{dup['id']}")
+        existing[name] = duplicates[0]["id"]
 
-    # Creer le workflow from scratch
-    import time
-    time.sleep(2)
-    st, body = call("POST", "/workflows", body=payload)
-    print(f"  CREATE {name} -> {st}")
+    if name in existing:
+        wf_id = existing[name]
+        st, body = call("PUT", f"/workflows/{wf_id}", body=payload)
+        print(f"\n  MAJ {name} (id={wf_id}) -> {st}")
+        if st not in (200, 201):
+            print(f"  Detail : {body}")
+            return wf_id
+    else:
+        st, body = call("POST", "/workflows", body=payload)
+        print(f"\n  CREE {name} -> {st}")
+        wf_id = body.get("id") if isinstance(body, dict) else None
+
     if isinstance(body, dict) and body.get("id"):
-        new_id = body["id"]
-        print(f"  Nouveau id={new_id}")
-        return new_id
+        return body["id"]
+    if wf_id:
+        return wf_id
     print(f"  ERREUR : {body}")
     return None
 
