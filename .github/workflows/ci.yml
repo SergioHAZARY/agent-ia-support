@@ -58,12 +58,16 @@ jobs:
             pg_isready -h 127.0.0.1 -p 5432 -U postgres && break; sleep 1;
           done
           docker exec pg psql -U postgres -c "create database agent;"
-          docker cp sql/001_schema.sql   pg:/001.sql
-          docker cp sql/002_seed.sql     pg:/002.sql
-          docker cp sql/003_runbooks.sql pg:/003.sql
+          docker cp sql/001_schema.sql          pg:/001.sql
+          docker cp sql/002_seed.sql             pg:/002.sql
+          docker cp sql/003_runbooks.sql         pg:/003.sql
+          docker cp sql/004_reporting_views.sql  pg:/004.sql
+          docker cp sql/005_runbooks_v2.sql      pg:/005.sql
           docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /001.sql
           docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /002.sql
           docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /003.sql
+          docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /004.sql
+          docker exec pg psql -U postgres -d agent -v ON_ERROR_STOP=1 -f /005.sql
           echo "--- comptages ---"
           docker exec pg psql -U postgres -d agent -c "select count(*) as taxonomie from taxonomy; select count(*) as runbooks from runbooks; select count(*) as societes from tenants;"
 

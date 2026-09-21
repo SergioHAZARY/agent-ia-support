@@ -666,6 +666,7 @@ else if (/^\/help\b|^aide\b/.test(text)) cmd = 'help';
 else if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';
 else if (/\/stats\b|statistiq/i.test(text)) cmd = 'stats';
 else if (/\/recents?\b|derniers?\b|24h/i.test(text)) cmd = 'recents';
+else if (/\/export\b|exporter|csv|dump/i.test(text)) cmd = 'export';
 
 // 2. Groupement (detecte independamment de la commande)
 let groupBy = 'categorie';
@@ -690,12 +691,21 @@ else if (/\b(jira|jsm)\b/i.test(text)) channelFilter = 'jira';
 else if (/\b(clickup|click[\s-]?up)\b/i.test(text)) channelFilter = 'clickup';
 else if (/\b(confluence|wiki)\b/i.test(text)) channelFilter = 'confluence';
 
-// 5. Filtre par tenant/societe (detecte independamment)
+// 5. Filtre par tenant/societe — matching generique, pas de liste hardcodee.
+// Extrait le dernier mot significatif apres un indicateur de societe.
 let tenantFilter = '';
-if (/\b(beautybay|beauty[\s-]?bay|regard[\s-]?beauty)\b/i.test(text)) tenantFilter = 'beautybay';
-else if (/\b(bazarchic|bazar[\s-]?chic)\b/i.test(text)) tenantFilter = 'bazarchic';
-else if (/\b(bouchara)\b/i.test(text)) tenantFilter = 'bouchara';
-else if (/\b(liban|it[\s-]?support[\s-]?liban)\b/i.test(text)) tenantFilter = 'liban';
+const tenantAliases = {
+  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],
+  'bazarchic': ['bazarchic','bazar chic','bazar-chic'],
+  'bouchara': ['bouchara'],
+  'liban': ['liban','it support liban','itsupportliban'],
+  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],
+  'francoissaget': ['francois saget','françois saget','francoissaget','fsaget'],
+  'devmg': ['dev mg','devmg','dev-mg']
+};
+for (const [key, aliases] of Object.entries(tenantAliases)) {
+  if (aliases.some(a => text.toLowerCase().includes(a))) { tenantFilter = key; break; }
+}
 
 return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter } }];
 """.strip()
@@ -742,10 +752,13 @@ function matchChannel(platform, filter) {
 }
 
 const tenantMap = {
-  'beautybay': ['beautybay','beauty bay','regard beauty','regardbeauty'],
-  'bazarchic': ['bazarchic','bazar chic'],
+  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],
+  'bazarchic': ['bazarchic','bazar chic','bazar-chic'],
   'bouchara': ['bouchara'],
-  'liban': ['liban','it support liban','itsupportliban']
+  'liban': ['liban','it support liban','itsupportliban'],
+  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],
+  'francoissaget': ['francois saget','françois saget','francoissaget','fsaget'],
+  'devmg': ['dev mg','devmg','dev-mg']
 };
 function matchTenant(name, filter) {
   if (!filter) return true;
@@ -776,8 +789,10 @@ if (cmd === 'start') {
     + '/rapport — Rapport complet tous statuts, tous canaux\n'
     + '/stats — Statistiques globales\n'
     + '/recents — Dernieres 24h\n'
+    + '/export — Export texte structuré (copier-coller)\n'
     + '/help — Aide\n\n'
     + '📡 Canaux surveilles : Telegram, Teams, Google Chat, Email, Jira, ClickUp, Confluence\n'
+    + '🏢 Societes : BeautyBay, Bazarchic, Bouchara, Atlas For Men, Francois Saget, IT Support Liban\n'
     + '🔔 Notifications automatiques dans le groupe DEV MG.';
   return [{ json: { reply, chatId } }];
 }
@@ -801,7 +816,11 @@ if (cmd === 'help') {
     + '• <code>tickets jira</code> / <code>tickets google chat</code>\n\n'
     + '<b>Filtres par societe :</b>\n'
     + '• <code>tickets beautybay</code> / <code>tickets bazarchic</code>\n'
-    + '• <code>tickets bouchara</code> / <code>tickets liban</code>\n\n'
+    + '• <code>tickets bouchara</code> / <code>tickets liban</code>\n'
+    + '• <code>tickets atlas</code> / <code>tickets francois saget</code>\n\n'
+    + '<b>Export :</b>\n'
+    + '• <code>export</code> — texte structuré, copiable\n'
+    + '• <code>export ouverts beautybay</code> — exporter avec filtres\n\n'
     + '<b>Combinaisons :</b>\n'
     + '• <code>tickets outlook beautybay</code> — canal + societe\n'
     + '• <code>tickets en cours par canal</code> — statut + groupement\n'
@@ -843,6 +862,24 @@ if (pool.length === 0) {
     + '💡 <i>Verifiez que des tickets existent pour ce canal/cette societe dans la base.</i>';
   else if (cmd === 'recents') reply = '✅ Aucune nouvelle demande dans les dernieres 24h.';
   else reply = '✅ Aucun ticket en cours. Tout est resolu !';
+  return [{ json: { reply, chatId } }];
+}
+
+// --- /export : liste texte structuree pour copier-coller ---
+if (cmd === 'export') {
+  const label = statusFilter ? statusLabel[statusFilter]||statusFilter : 'tous';
+  reply = '📤 <b>Export tickets</b> (' + pool.length + ' — ' + esc(label) + ')\n\n<pre>';
+  reply += 'REF | STATUT | PRIO | CANAL | SOCIETE | CATEGORIE | TITRE | DATE\n';
+  reply += '---|---|---|---|---|---|---|---\n';
+  for (const t of pool.slice(0, 50)) {
+    reply += [
+      t.ref||(t.id||'').slice(0,8), t.status||'', t.priority||'',
+      t.platform||'', t.tenant_name||'', t.category||'',
+      (t.title||'').slice(0,40), t.cree_le||''
+    ].join(' | ') + '\n';
+  }
+  if (pool.length > 50) reply += '... ' + (pool.length-50) + ' lignes supprimees\n';
+  reply += '</pre>';
   return [{ json: { reply, chatId } }];
 }
 

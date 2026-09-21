@@ -228,6 +228,107 @@
           }
         }
       }
+    },
+
+    {
+      "name": "update_ticket_status",
+      "description": "Change le statut d'un ticket. Le demandeur ne peut modifier que ses propres tickets. Un IT ou admin peut modifier n'importe quel ticket de sa société. Le passage en « resolu » déclenche une notification au demandeur. Le passage en « clos » est irréversible.",
+      "input_schema": {
+        "type": "object",
+        "required": ["ref", "nouveau_statut", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "Référence du ticket, ex. ITS-1234."
+          },
+          "nouveau_statut": {
+            "type": "string",
+            "enum": ["en_cours", "en_attente", "resolu", "clos"],
+            "description": "en_cours : pris en charge · en_attente : attend une réponse du demandeur · resolu : problème réglé · clos : archivé."
+          },
+          "note": {
+            "type": "string",
+            "description": "Raison du changement de statut. Obligatoire : un changement sans explication est inutile pour l'audit."
+          }
+        }
+      }
+    },
+
+    {
+      "name": "add_internal_note",
+      "description": "Ajoute une note interne à un ticket, visible uniquement par l'équipe IT. Sert à documenter un diagnostic, une tentative de résolution, ou un contexte technique. N'envoie rien au demandeur.",
+      "input_schema": {
+        "type": "object",
+        "required": ["ref", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "Référence du ticket."
+          },
+          "note": {
+            "type": "string",
+            "description": "Le contenu de la note. Pas de secret, pas de mot de passe, même en interne."
+          },
+          "visible_par_demandeur": {
+            "type": "boolean",
+            "default": false,
+            "description": "true pour rendre la note visible par le demandeur. Par défaut, interne uniquement."
+          }
+        }
+      }
+    },
+
+    {
+      "name": "check_service_status",
+      "description": "Vérifie si un service connu est actuellement en panne ou dégradé. À appeler AVANT de créer un ticket individuel quand plusieurs personnes signalent le même problème — un incident en cours explique le symptôme sans action individuelle. Retourne le statut courant et les incidents connus.",
+      "input_schema": {
+        "type": "object",
+        "required": ["service"],
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "Le nom du service : Exchange Online, VPN, Teams, Outlook, SharePoint, OneDrive, Internet, Réseau interne, Téléphonie, ERP, etc."
+          },
+          "inclure_historique": {
+            "type": "boolean",
+            "default": false,
+            "description": "true pour inclure les incidents résolus des 7 derniers jours."
+          }
+        }
+      }
+    },
+
+    {
+      "name": "notify_requester",
+      "description": "Envoie une notification proactive au demandeur sur l'évolution de son ticket. À utiliser pour informer d'une résolution, d'une mise à jour, ou pour relancer après un silence. Le message est envoyé dans le canal d'origine du ticket.",
+      "input_schema": {
+        "type": "object",
+        "required": ["ref", "message", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "Référence du ticket."
+          },
+          "message": {
+            "type": "string",
+            "description": "Le message, dans la langue du demandeur. Direct et utile."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["resolution", "mise_a_jour", "relance"],
+            "description": "resolution : le problème est réglé · mise_a_jour : info intermédiaire · relance : rappel après inactivité du demandeur."
+          },
+          "prive": {
+            "type": "boolean",
+            "default": false,
+            "description": "true pour envoyer en message privé. À utiliser dès que le contenu est nominatif."
+          }
+        }
+      }
     }
   ],
 
