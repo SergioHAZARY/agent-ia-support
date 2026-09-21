@@ -1803,42 +1803,38 @@ nodes = [
         "headerParameters": {"parameters": [
             {"name": "Content-Type", "value": "application/json"}]}},
         on_error="continueRegularOutput"),
-    node("Envoyer CSV Telegram", "n8n-nodes-base.code", 2, [1200, 940], {
+    node("Preparer CSV binaire", "n8n-nodes-base.code", 2, [1100, 940], {
         "jsCode": r"""
-// Envoie le CSV via Telegram sendDocument en utilisant fetch + FormData natif
-const chatId = $json.chatId;
-const caption = ($json.reply || '').slice(0, 1024);
 const csvData = $json.csv_data || '';
 const filename = $json.csv_filename || 'tickets_export.csv';
-const token = $vars.TELEGRAM_ADMIN_BOT_TOKEN;
-const url = 'https://api.telegram.org/bot' + token + '/sendDocument';
-
-// Node.js 18+ : fetch, Blob et FormData sont disponibles globalement
-const csvBlob = new Blob([csvData], { type: 'text/csv; charset=utf-8' });
-const form = new FormData();
-form.append('chat_id', chatId);
-form.append('caption', caption);
-form.append('parse_mode', 'HTML');
-form.append('document', csvBlob, filename);
-
-const resp = await fetch(url, { method: 'POST', body: form });
-const result = await resp.json();
-
-if (!result.ok) {
-  // Fallback : envoyer le message texte sans fichier
-  await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: caption + '\n\n⚠️ Le fichier CSV est trop volumineux (' + csvData.length + ' car.). Utilisez /export avec un filtre plus precis.',
-      parse_mode: 'HTML'
-    })
-  });
-}
-
-return [{ json: { ok: result.ok, chatId, file_size: csvData.length } }];
+const buffer = Buffer.from('﻿' + csvData, 'utf-8');
+const binaryData = await this.helpers.prepareBinaryData(buffer, filename, 'text/csv');
+return [{
+  json: {
+    chatId: $json.chatId,
+    caption: ($json.reply || '').slice(0, 1024)
+  },
+  binary: { document: binaryData }
+}];
 """.strip()}),
+
+    node("HTTP: sendDocument CSV", "n8n-nodes-base.httpRequest", 4.2, [1300, 940], {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendDocument",
+        "sendBody": True,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {"parameters": [
+            {"parameterType": "formData", "name": "chat_id",
+             "value": "={{ $json.chatId }}"},
+            {"parameterType": "formData", "name": "caption",
+             "value": "={{ $json.caption }}"},
+            {"parameterType": "formData", "name": "parse_mode",
+             "value": "HTML"},
+            {"parameterType": "formBinaryData", "name": "document",
+             "inputDataFieldName": "document"},
+        ]},
+        "options": {"response": {"response": {"responseFormat": "json"}}}},
+        on_error="continueRegularOutput"),
 ]
 
 connections = merge_conn(
@@ -1953,7 +1949,8 @@ connections = merge_conn(
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
         ("Formater admin", "Admin: est-ce un export ?"),
-        ("Admin: est-ce un export ?", "Envoyer CSV Telegram", 0),
+        ("Admin: est-ce un export ?", "Preparer CSV binaire", 0),
+        ("Preparer CSV binaire", "HTTP: sendDocument CSV"),
         ("Admin: est-ce un export ?", "HTTP: reponse admin", 1),
     ]),
     conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
