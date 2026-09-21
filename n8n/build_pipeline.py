@@ -667,7 +667,7 @@ else if (/^\/help\b|^aide\b/.test(text)) cmd = 'help';
 else if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';
 else if (/\/stats\b|statistiq/i.test(text)) cmd = 'stats';
 else if (/\/recents?\b|derniers?\b|24h/i.test(text)) cmd = 'recents';
-else if (/\/export\b|exporter|csv|dump/i.test(text)) cmd = 'export';
+else if (/\/export\b|exporter|csv|dump|excel|xls|fichier/i.test(text)) cmd = 'export';
 
 // 2. Groupement (detecte independamment de la commande)
 let groupBy = 'categorie';
@@ -866,22 +866,29 @@ if (pool.length === 0) {
   return [{ json: { reply, chatId } }];
 }
 
-// --- /export : liste texte structuree pour copier-coller ---
+// --- /export : fichier CSV envoye en document Telegram ---
 if (cmd === 'export') {
   const label = statusFilter ? statusLabel[statusFilter]||statusFilter : 'tous';
-  reply = '📤 <b>Export tickets</b> (' + pool.length + ' — ' + esc(label) + ')\n\n<pre>';
-  reply += 'REF | STATUT | PRIO | CANAL | SOCIETE | CATEGORIE | TITRE | DATE\n';
-  reply += '---|---|---|---|---|---|---|---\n';
-  for (const t of pool.slice(0, 50)) {
-    reply += [
-      t.ref||(t.id||'').slice(0,8), t.status||'', t.priority||'',
-      t.platform||'', t.tenant_name||'', t.category||'',
-      (t.title||'').slice(0,40), t.cree_le||''
-    ].join(' | ') + '\n';
+  const sep = ';';
+  const headers = ['REF','STATUT','PRIORITE','CANAL','SOCIETE','CATEGORIE','DEMANDEUR','TITRE','DATE'];
+  let csv = '﻿' + headers.join(sep) + '\n';
+  for (const t of pool) {
+    const row = [
+      t.ref||(t.id||'').slice(0,8),
+      t.status||'',
+      t.priority||'',
+      t.platform||'',
+      t.tenant_name||'',
+      t.category||'',
+      (t.requester_raw||'').replace(/[;"]/g,' '),
+      '"' + (t.title||'').replace(/"/g,"'").slice(0,120) + '"',
+      t.cree_le||''
+    ];
+    csv += row.join(sep) + '\n';
   }
-  if (pool.length > 50) reply += '... ' + (pool.length-50) + ' lignes supprimees\n';
-  reply += '</pre>';
-  return [{ json: { reply, chatId } }];
+  reply = '📤 <b>Export tickets</b> (' + pool.length + ' — ' + esc(label) + ')\n'
+    + '📎 Fichier CSV en piece jointe.';
+  return [{ json: { reply, chatId, csv_data: csv, csv_filename: 'tickets_export.csv' } }];
 }
 
 // --- /stats ---
@@ -1776,7 +1783,15 @@ nodes = [
     pg_node("PG: admin tickets", [600, 1020], PG_ADMIN_TICKETS_SQL, ""),
     node("Formater admin", "n8n-nodes-base.code", 2, [800, 1020],
          {"jsCode": ADMIN_FORMAT_JS}),
-    node("HTTP: reponse admin", "n8n-nodes-base.httpRequest", 4.2, [1000, 1020], {
+    node("Admin: est-ce un export ?", "n8n-nodes-base.if", 2.3, [1000, 1020], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "exp1",
+                                       "leftValue": "={{ $json.csv_data }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "string", "operation": "isNotEmpty"}}]},
+        "options": {}}),
+    node("HTTP: reponse admin", "n8n-nodes-base.httpRequest", 4.2, [1200, 1100], {
         "method": "POST",
         "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendMessage",
         "sendBody": True,
@@ -1788,6 +1803,52 @@ nodes = [
         "headerParameters": {"parameters": [
             {"name": "Content-Type", "value": "application/json"}]}},
         on_error="continueRegularOutput"),
+    node("Preparer CSV", "n8n-nodes-base.code", 2, [1200, 940], {
+        "jsCode": r"""
+// Encode le CSV en base64 pour l'envoyer via sendDocument
+const csvData = $json.csv_data || '';
+const csvB64 = Buffer.from(csvData, 'utf-8').toString('base64');
+return [{ json: {
+  chatId: $json.chatId,
+  reply: $json.reply,
+  csv_base64: csvB64,
+  csv_filename: $json.csv_filename || 'tickets_export.csv'
+}}];
+""".strip()}),
+    node("HTTP: envoyer CSV", "n8n-nodes-base.httpRequest", 4.2, [1400, 940], {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendDocument",
+        "sendBody": True,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {"parameters": [
+            {"name": "chat_id", "value": "={{ $json.chatId }}",
+             "parameterType": "formData"},
+            {"name": "caption", "value": "={{ $json.reply }}",
+             "parameterType": "formData"},
+            {"name": "parse_mode", "value": "HTML",
+             "parameterType": "formData"},
+            {"name": "document",
+             "parameterType": "formBinaryData",
+             "inputDataFieldName": "data"}]},
+        "options": {"response": {"response": {"responseFormat": "json"}}}}),
+    node("Convertir binaire CSV", "n8n-nodes-base.code", 2, [1300, 880], {
+        "jsCode": r"""
+// Convertit le CSV base64 en binaire pour n8n sendDocument
+const items = $input.all();
+const result = [];
+for (const item of items) {
+  const csvB64 = item.json.csv_base64;
+  const buf = Buffer.from(csvB64, 'base64');
+  const bin = await this.helpers.prepareBinaryData(buf,
+    item.json.csv_filename || 'tickets_export.csv',
+    'text/csv');
+  result.push({
+    json: { chatId: item.json.chatId, reply: item.json.reply },
+    binary: { data: bin }
+  });
+}
+return result;
+""".strip()}),
 ]
 
 connections = merge_conn(
@@ -1901,7 +1962,11 @@ connections = merge_conn(
         ("AdminTrigger", "Parser admin"),
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
-        ("Formater admin", "HTTP: reponse admin"),
+        ("Formater admin", "Admin: est-ce un export ?"),
+        ("Admin: est-ce un export ?", "Preparer CSV", 0),
+        ("Admin: est-ce un export ?", "HTTP: reponse admin", 1),
+        ("Preparer CSV", "Convertir binaire CSV"),
+        ("Convertir binaire CSV", "HTTP: envoyer CSV"),
     ]),
     conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
 )
