@@ -720,6 +720,7 @@ const cmdData = $('Parser admin').first().json;
 const cmd = cmdData.cmd;
 const groupBy = cmdData.groupBy;
 const chatId = cmdData.chatId;
+const isWeb = !!cmdData.isWeb;
 const statusFilter = cmdData.statusFilter || '';
 const channelFilter = cmdData.channelFilter || '';
 const tenantFilter = cmdData.tenantFilter || '';
@@ -797,7 +798,7 @@ if (cmd === 'start') {
     + '📡 Canaux surveilles : Telegram, Teams, Google Chat, Email, Jira, ClickUp, Confluence\n'
     + '🏢 Societes : BeautyBay, Bazarchic, Bouchara, Atlas For Men, Francois Saget, IT Support Liban\n'
     + '🔔 Notifications automatiques dans le groupe DEV MG.';
-  return [{ json: { reply, chatId } }];
+  return [{ json: { reply, chatId, isWeb } }];
 }
 
 // --- /help ---
@@ -833,7 +834,7 @@ if (cmd === 'help') {
     + '• <code>rapport ouverts</code> / <code>rapport clos</code>\n'
     + '• <code>stats</code> — comptages globaux\n'
     + '• <code>recents</code> — dernieres 24h';
-  return [{ json: { reply, chatId } }];
+  return [{ json: { reply, chatId, isWeb } }];
 }
 
 // --- Filtrage commun : statusFilter, channelFilter, tenantFilter s'appliquent partout ---
@@ -865,7 +866,7 @@ if (pool.length === 0) {
     + '💡 <i>Verifiez que des tickets existent pour ce canal/cette societe dans la base.</i>';
   else if (cmd === 'recents') reply = '✅ Aucune nouvelle demande dans les dernieres 24h.';
   else reply = '✅ Aucun ticket en cours. Tout est resolu !';
-  return [{ json: { reply, chatId } }];
+  return [{ json: { reply, chatId, isWeb } }];
 }
 
 // --- /export : fichier CSV envoye en document Telegram ---
@@ -890,7 +891,7 @@ if (cmd === 'export') {
   }
   reply = '📤 <b>Export tickets</b> (' + pool.length + ' — ' + esc(label) + ')\n'
     + '📎 Fichier CSV en piece jointe.';
-  return [{ json: { reply, chatId, csv_data: csv, csv_filename: 'tickets_export.csv' } }];
+  return [{ json: { reply, chatId, isWeb, csv_data: csv, csv_filename: 'tickets_export.csv' } }];
 }
 
 // --- /stats ---
@@ -920,7 +921,7 @@ if (cmd === 'stats') {
   reply += '\n<b>Par niveau :</b>\n';
   for (const k of ['N0','N1','N2','N3'])
     if (byLevel[k]) reply += '  • ' + k + ' : ' + byLevel[k] + '\n';
-  return [{ json: { reply, chatId } }];
+  return [{ json: { reply, chatId, isWeb } }];
 }
 
 // --- /rapport : vue complete par statut puis par canal ---
@@ -961,7 +962,7 @@ if (cmd === 'rapport') {
   for (const [c,n] of Object.entries(byCat).sort((a,b)=>b[1]-a[1]))
     reply += '  • ' + esc(c) + ' : ' + n + '\n';
 
-  return [{ json: { reply, chatId } }];
+  return [{ json: { reply, chatId, isWeb } }];
 }
 
 // --- /tickets et /recents : groupement configurable ---
