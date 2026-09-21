@@ -1148,28 +1148,26 @@ return [{json: {
 
 
 def _imap_nodes():
-    """Genere un noeud Microsoft Outlook Trigger + normalisation par boite mail."""
+    """Genere un noeud Microsoft Outlook Trigger + normalisation par boite mail.
+    N'inclut QUE les boites dont la credential existe (id non vide dans
+    credentials.json). Les trigger Outlook sans credential empechent n8n
+    d'activer le workflow — mieux vaut ne pas les inclure du tout."""
     result = []
-    for i, mb in enumerate(EMAIL_ACCOUNTS):
+    active = [(i, mb) for i, mb in enumerate(EMAIL_ACCOUNTS)
+              if mb["key"] in CREDS and CREDS[mb["key"]].get("id")]
+    for i, mb in active:
         y = 380 + i * 80
-        has_cred = mb["key"] in CREDS and CREDS[mb["key"]].get("id")
         trigger_name = f"Outlook: {mb['label']}"
         normalize_name = f"Norm: {mb['label']}"
-        # Microsoft Outlook Trigger (polling via Graph API, OAuth2)
         result.append(node(
             trigger_name,
             "n8n-nodes-base.microsoftOutlookTrigger", 1, [-60, y],
-            {"event": "messageReceived",
-             "simple": False},
-            creds=({"microsoftOutlookOAuth2Api": CREDS[mb["key"]]}
-                   if has_cred else None),
-            disabled=(not has_cred),
+            {"event": "messageReceived", "simple": False},
+            creds={"microsoftOutlookOAuth2Api": CREDS[mb["key"]]},
         ))
-        # Code node pour normaliser vers le format attendu par le pipeline
         result.append(node(
             normalize_name, "n8n-nodes-base.code", 2, [120, y],
             {"jsCode": OUTLOOK_NORMALIZE_JS},
-            disabled=(not has_cred),
         ))
     return result
 
@@ -1220,15 +1218,16 @@ def _jira_poll_nodes():
     for i, ji in enumerate(JIRA_INSTANCES):
         y = 940 + i * 100
         has_cred = ji["credKey"] in CREDS and CREDS[ji["credKey"]].get("id")
+        if not has_cred:
+            continue
         sched_name = f"Schedule: {ji['label']}"
         http_name = f"Poll: {ji['label']}"
         parse_name = f"Parse: {ji['label']}"
         result.append(node(
             sched_name, "n8n-nodes-base.scheduleTrigger", 1.2, [-60, y],
             {"rule": {"interval": [{"field": "minutes", "minutesInterval": 5}]}},
-            disabled=(not has_cred),
         ))
-        jql = (f"project != '' AND updated >= -10m ORDER BY updated DESC")
+        jql = "project != '' AND updated >= -10m ORDER BY updated DESC"
         result.append(node(
             http_name, "n8n-nodes-base.httpRequest", 4.2, [100, y],
             {"method": "GET",
@@ -1242,13 +1241,11 @@ def _jira_poll_nodes():
                  {"name": "fields",
                   "value": "summary,description,reporter,project,issuetype,priority,status"}]},
              "options": {"response": {"response": {"responseFormat": "json"}}}},
-            creds=({"httpBasicAuth": CREDS[ji["credKey"]]} if has_cred else None),
-            disabled=(not has_cred),
+            creds={"httpBasicAuth": CREDS[ji["credKey"]]},
         ))
         result.append(node(
             parse_name, "n8n-nodes-base.code", 2, [280, y],
             {"jsCode": JIRA_POLL_JS},
-            disabled=(not has_cred),
         ))
     return result
 
@@ -1678,16 +1675,26 @@ connections = merge_conn(
         ("Webhook Jira", "Normaliser (multicanal)"),
         ("Webhook Teams", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
-        # --- Outlook OAuth2 (5 boites) → Norm → Normalisation ---
-        *[(f"Outlook: {mb['label']}", f"Norm: {mb['label']}") for mb in EMAIL_ACCOUNTS],
-        *[(f"Norm: {mb['label']}", "Normaliser (multicanal)") for mb in EMAIL_ACCOUNTS],
+        # --- Outlook OAuth2 (boites avec credential) → Norm → Normalisation ---
+        *[(f"Outlook: {mb['label']}", f"Norm: {mb['label']}")
+           for mb in EMAIL_ACCOUNTS
+           if mb["key"] in CREDS and CREDS[mb["key"]].get("id")],
+        *[(f"Norm: {mb['label']}", "Normaliser (multicanal)")
+           for mb in EMAIL_ACCOUNTS
+           if mb["key"] in CREDS and CREDS[mb["key"]].get("id")],
         # --- Webhook Email (Power Automate bridge) → Norm → Normalisation ---
         ("Webhook Email", "Norm: Webhook Email"),
         ("Norm: Webhook Email", "Normaliser (multicanal)"),
-        # --- Jira Polling → Parse → Normalisation ---
-        *[(f"Schedule: {ji['label']}", f"Poll: {ji['label']}") for ji in JIRA_INSTANCES],
-        *[(f"Poll: {ji['label']}", f"Parse: {ji['label']}") for ji in JIRA_INSTANCES],
-        *[(f"Parse: {ji['label']}", "Normaliser (multicanal)") for ji in JIRA_INSTANCES],
+        # --- Jira Polling → Parse → Normalisation (uniquement si credential) ---
+        *[(f"Schedule: {ji['label']}", f"Poll: {ji['label']}")
+           for ji in JIRA_INSTANCES
+           if ji["credKey"] in CREDS and CREDS[ji["credKey"]].get("id")],
+        *[(f"Poll: {ji['label']}", f"Parse: {ji['label']}")
+           for ji in JIRA_INSTANCES
+           if ji["credKey"] in CREDS and CREDS[ji["credKey"]].get("id")],
+        *[(f"Parse: {ji['label']}", "Normaliser (multicanal)")
+           for ji in JIRA_INSTANCES
+           if ji["credKey"] in CREDS and CREDS[ji["credKey"]].get("id")],
         # --- ClickUp Polling → Parse → Normalisation ---
         ("Schedule: ClickUp", "Poll: ClickUp"),
         ("Poll: ClickUp", "Parse: ClickUp"),
