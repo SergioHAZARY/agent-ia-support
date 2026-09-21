@@ -10,7 +10,7 @@
         -320
       ],
       "parameters": {
-        "content": "## AgentSupport - Pipeline v2 (multicanal, contexte enrichi)\n\nCANAUX : Telegram | Webhook (Jira, Teams, ClickUp, GChat) | Email IMAP.\nNormalise -> PG events -> societe -> ENRICHIR CONTEXTE -> AGENT CLAUDE\n-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n\nREPORTING : detection auto des demandes de tickets -> requete PG.\nNOTIFICATION : chaque nouveau ticket alerte le groupe DEV MG.\nN3 -> ClickUp (Escalades Agent IA) + alerte detaillee DEV MG.\n\nLIVRAISON MULTI-CANAL : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events sur chaque reponse.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.\n\nWEBHOOKS :\n  /webhook/agent-support         (generique)\n  /webhook/agent-support-jira    (Jira)\n  /webhook/agent-support-teams   (Teams)\n  /webhook/agent-support-reporting (GET, reporting API)\n\nVARIABLES N8N A CREER :\nCLICKUP_API_TOKEN, CLICKUP_LIST_ID, TELEGRAM_DEVMG_CHAT_ID,\nTELEGRAM_BOT_TOKEN, SMTP_FROM (optionnel)",
+        "content": "## AgentSupport - Pipeline v3 (multicanal complet)\n\nCANAUX CONNECTES EN PERMANENCE :\n  Telegram (support + admin) | IMAP x5 (Outlook/Email) |\n  Jira x2 (Bazarchic + BeautyBay) | ClickUp | Webhooks (Teams, GChat)\n\nBOITES IMAP :\n  itsupport@bazarchic.com | itsupport@beautybay.com |\n  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n  support-odoo@regardbeauty.onmicrosoft.com\n\nPIPELINE : Normalise -> PG events -> societe -> contexte enrichi ->\n  AGENT CLAUDE -> GARDE-FOUS -> ticket -> N0/N1/N2/N3.\n\nLIVRAISON : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.",
         "height": 320,
         "width": 680
       }
@@ -52,7 +52,7 @@
       }
     },
     {
-      "name": "Email IMAP (Outlook)",
+      "name": "Email: IMAP Bazarchic",
       "type": "n8n-nodes-base.emailReadImap",
       "typeVersion": 2,
       "position": [
@@ -60,7 +60,74 @@
         380
       ],
       "parameters": {
-        "options": {}
+        "mailbox": "INBOX",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "Email: IMAP BeautyBay",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        450
+      ],
+      "parameters": {
+        "mailbox": "INBOX",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "Email: IMAP AtlasForMen",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        520
+      ],
+      "parameters": {
+        "mailbox": "INBOX",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "Email: IMAP FrancoisSaget",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        590
+      ],
+      "parameters": {
+        "mailbox": "INBOX",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "Email: IMAP RegardBeauty",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        660
+      ],
+      "parameters": {
+        "mailbox": "INBOX",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
       },
       "disabled": true
     },
@@ -70,7 +137,7 @@
       "typeVersion": 1.1,
       "position": [
         -60,
-        440
+        740
       ],
       "parameters": {
         "httpMethod": "POST",
@@ -85,7 +152,7 @@
       "typeVersion": 1.1,
       "position": [
         -60,
-        540
+        840
       ],
       "parameters": {
         "httpMethod": "POST",
@@ -95,12 +162,242 @@
       }
     },
     {
+      "name": "Schedule: Jira Bazarchic",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -60,
+        940
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Poll: Jira Bazarchic",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        940
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://bzcmtc.atlassian.net/rest/api/3/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "jql",
+              "value": "project != '' AND updated >= -10m ORDER BY updated DESC"
+            },
+            {
+              "name": "maxResults",
+              "value": "20"
+            },
+            {
+              "name": "fields",
+              "value": "summary,description,reporter,project,issuetype,priority,status"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "VRBk6zsXdR3deqJ7",
+          "name": "Jira Bazarchic (HTTP Basic)"
+        }
+      }
+    },
+    {
+      "name": "Parse: Jira Bazarchic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        940
+      ],
+      "parameters": {
+        "jsCode": "// Interroge Jira REST API : issues creees/modifiees dans les dernieres 10 min.\n// Le deduplication se fait dans le Normaliser via source_message_id = issue.key.\nconst items = $input.all();\nconst results = [];\nfor (const item of items) {\n  const data = item.json;\n  if (data.issues && Array.isArray(data.issues)) {\n    for (const iss of data.issues) {\n      const f = iss.fields || {};\n      const rep = f.reporter || {};\n      const selfUrl = (iss.self || '');\n      const site = selfUrl.match(/https?:\\/\\/([^/]+)/);\n      const desc = typeof f.description === 'string' ? f.description :\n        (f.description && f.description.content ? f.description.content.map(\n          b => (b.content||[]).map(c => c.text||'').join('')).join(' ') : '');\n      results.push({json: {\n        webhookEvent: 'jira:issue_created',\n        issue: { id: iss.id, key: iss.key, self: iss.self, fields: {\n          summary: f.summary || '', description: desc,\n          reporter: rep, project: f.project, issuetype: f.issuetype,\n          priority: f.priority, status: f.status }}\n      }});\n    }\n  }\n}\nreturn results.length ? results : [{ json: { _empty: true } }];"
+      }
+    },
+    {
+      "name": "Schedule: Jira BeautyBay",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -60,
+        1040
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "Poll: Jira BeautyBay",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        1040
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://beautybay.atlassian.net/rest/api/3/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "jql",
+              "value": "project != '' AND updated >= -10m ORDER BY updated DESC"
+            },
+            {
+              "name": "maxResults",
+              "value": "20"
+            },
+            {
+              "name": "fields",
+              "value": "summary,description,reporter,project,issuetype,priority,status"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "disabled": true
+    },
+    {
+      "name": "Parse: Jira BeautyBay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1040
+      ],
+      "parameters": {
+        "jsCode": "// Interroge Jira REST API : issues creees/modifiees dans les dernieres 10 min.\n// Le deduplication se fait dans le Normaliser via source_message_id = issue.key.\nconst items = $input.all();\nconst results = [];\nfor (const item of items) {\n  const data = item.json;\n  if (data.issues && Array.isArray(data.issues)) {\n    for (const iss of data.issues) {\n      const f = iss.fields || {};\n      const rep = f.reporter || {};\n      const selfUrl = (iss.self || '');\n      const site = selfUrl.match(/https?:\\/\\/([^/]+)/);\n      const desc = typeof f.description === 'string' ? f.description :\n        (f.description && f.description.content ? f.description.content.map(\n          b => (b.content||[]).map(c => c.text||'').join('')).join(' ') : '');\n      results.push({json: {\n        webhookEvent: 'jira:issue_created',\n        issue: { id: iss.id, key: iss.key, self: iss.self, fields: {\n          summary: f.summary || '', description: desc,\n          reporter: rep, project: f.project, issuetype: f.issuetype,\n          priority: f.priority, status: f.status }}\n      }});\n    }\n  }\n}\nreturn results.length ? results : [{ json: { _empty: true } }];"
+      },
+      "disabled": true
+    },
+    {
+      "name": "Schedule: ClickUp",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -60,
+        1140
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Poll: ClickUp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        1140
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.clickup.com/api/v2/list/{{ $vars.CLICKUP_LIST_ID || '901222267724' }}/task",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $vars.CLICKUP_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "order_by",
+              "value": "updated"
+            },
+            {
+              "name": "reverse",
+              "value": "true"
+            },
+            {
+              "name": "subtasks",
+              "value": "true"
+            },
+            {
+              "name": "page",
+              "value": "0"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Parse: ClickUp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1140
+      ],
+      "parameters": {
+        "jsCode": "// Parse les taches ClickUp recentes en format normalise.\nconst data = $json;\nconst tasks = data.tasks || [];\nconst results = [];\nfor (const t of tasks) {\n  const assignees = (t.assignees || []).map(a => a.username || a.email || '').join(', ');\n  results.push({json: {\n    headers: {},\n    body: {\n      platform: 'clickup',\n      channel_id: t.list ? t.list.id : '',\n      message_id: t.id,\n      user_id: (t.creator || {}).id || '',\n      user_name: (t.creator || {}).username || '',\n      text: (t.name || '') + (t.description ? ' — ' + t.description : ''),\n      description: t.description || '',\n      list_id: t.list ? t.list.id : ''\n    },\n    query: { platform: 'clickup' }\n  }});\n}\nreturn results.length ? results : [{ json: { _empty: true } }];"
+      }
+    },
+    {
       "name": "Declencheur manuel",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
         -60,
-        660
+        1160
       ],
       "parameters": {}
     },
@@ -1332,7 +1629,7 @@
         ]
       ]
     },
-    "Email IMAP (Outlook)": {
+    "Declencheur manuel": {
       "main": [
         [
           {
@@ -1343,7 +1640,150 @@
         ]
       ]
     },
-    "Declencheur manuel": {
+    "Email: IMAP Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: IMAP BeautyBay": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: IMAP AtlasForMen": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: IMAP FrancoisSaget": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: IMAP RegardBeauty": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule: Jira Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Poll: Jira Bazarchic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule: Jira BeautyBay": {
+      "main": [
+        [
+          {
+            "node": "Poll: Jira BeautyBay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll: Jira Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Parse: Jira Bazarchic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll: Jira BeautyBay": {
+      "main": [
+        [
+          {
+            "node": "Parse: Jira BeautyBay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse: Jira Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse: Jira BeautyBay": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule: ClickUp": {
+      "main": [
+        [
+          {
+            "node": "Poll: ClickUp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll: ClickUp": {
+      "main": [
+        [
+          {
+            "node": "Parse: ClickUp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse: ClickUp": {
       "main": [
         [
           {

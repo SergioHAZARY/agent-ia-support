@@ -1102,27 +1102,192 @@ def pg_node(name, pos, sql, repl_expr):
 
 
 # --------------------------------------------------------------------------- #
+# Generateurs de noeuds multicanal
+# --------------------------------------------------------------------------- #
+
+# --- Boites IMAP (Outlook / Email) ---
+IMAP_MAILBOXES = [
+    {"key": "imapBazarchic",      "label": "IMAP Bazarchic",
+     "mailbox": "itsupport@bazarchic.com"},
+    {"key": "imapBeautyBay",      "label": "IMAP BeautyBay",
+     "mailbox": "itsupport@beautybay.com"},
+    {"key": "imapAtlasForMen",    "label": "IMAP AtlasForMen",
+     "mailbox": "thaina_aa@atlasformen.com"},
+    {"key": "imapFrancoisSaget",  "label": "IMAP FrancoisSaget",
+     "mailbox": "support-it@francoisesaget.com"},
+    {"key": "imapRegardBeauty",   "label": "IMAP RegardBeauty",
+     "mailbox": "support-odoo@regardbeauty.onmicrosoft.com"},
+]
+
+
+def _imap_nodes():
+    """Genere un noeud IMAP par boite mail. Desactive si pas de credential."""
+    result = []
+    for i, mb in enumerate(IMAP_MAILBOXES):
+        y = 380 + i * 70
+        has_cred = mb["key"] in CREDS and CREDS[mb["key"]].get("id")
+        result.append(node(
+            f"Email: {mb['label']}", "n8n-nodes-base.emailReadImap", 2, [-60, y],
+            {"mailbox": "INBOX", "options": {"allowUnauthorizedCerts": True}},
+            creds=({"imap": CREDS[mb["key"]]} if has_cred else None),
+            disabled=(not has_cred),
+        ))
+    return result
+
+
+# --- Jira Polling (HTTP Schedule) ---
+# Utilise des appels HTTP programes car n8n cloud n'a pas de noeud Jira natif
+# accessible sans OAuth2. On interroge l'API REST Jira toutes les 5 min.
+JIRA_POLL_JS = r"""
+// Interroge Jira REST API : issues creees/modifiees dans les dernieres 10 min.
+// Le deduplication se fait dans le Normaliser via source_message_id = issue.key.
+const items = $input.all();
+const results = [];
+for (const item of items) {
+  const data = item.json;
+  if (data.issues && Array.isArray(data.issues)) {
+    for (const iss of data.issues) {
+      const f = iss.fields || {};
+      const rep = f.reporter || {};
+      const selfUrl = (iss.self || '');
+      const site = selfUrl.match(/https?:\/\/([^/]+)/);
+      const desc = typeof f.description === 'string' ? f.description :
+        (f.description && f.description.content ? f.description.content.map(
+          b => (b.content||[]).map(c => c.text||'').join('')).join(' ') : '');
+      results.push({json: {
+        webhookEvent: 'jira:issue_created',
+        issue: { id: iss.id, key: iss.key, self: iss.self, fields: {
+          summary: f.summary || '', description: desc,
+          reporter: rep, project: f.project, issuetype: f.issuetype,
+          priority: f.priority, status: f.status }}
+      }});
+    }
+  }
+}
+return results.length ? results : [{ json: { _empty: true } }];
+""".strip()
+
+JIRA_INSTANCES = [
+    {"key": "jiraHttp",          "label": "Jira Bazarchic",
+     "site": "bzcmtc.atlassian.net", "credKey": "jiraHttp"},
+    {"key": "jiraHttpBeautyBay", "label": "Jira BeautyBay",
+     "site": "beautybay.atlassian.net", "credKey": "jiraHttpBeautyBay"},
+]
+
+
+def _jira_poll_nodes():
+    """Genere 2 noeuds par instance Jira : Schedule + HTTP GET search."""
+    result = []
+    for i, ji in enumerate(JIRA_INSTANCES):
+        y = 940 + i * 100
+        has_cred = ji["credKey"] in CREDS and CREDS[ji["credKey"]].get("id")
+        sched_name = f"Schedule: {ji['label']}"
+        http_name = f"Poll: {ji['label']}"
+        parse_name = f"Parse: {ji['label']}"
+        result.append(node(
+            sched_name, "n8n-nodes-base.scheduleTrigger", 1.2, [-60, y],
+            {"rule": {"interval": [{"field": "minutes", "minutesInterval": 5}]}},
+            disabled=(not has_cred),
+        ))
+        jql = (f"project != '' AND updated >= -10m ORDER BY updated DESC")
+        result.append(node(
+            http_name, "n8n-nodes-base.httpRequest", 4.2, [100, y],
+            {"method": "GET",
+             "url": f"https://{ji['site']}/rest/api/3/search",
+             "authentication": "genericCredentialType",
+             "genericAuthType": "httpBasicAuth",
+             "sendQuery": True,
+             "queryParameters": {"parameters": [
+                 {"name": "jql", "value": jql},
+                 {"name": "maxResults", "value": "20"},
+                 {"name": "fields",
+                  "value": "summary,description,reporter,project,issuetype,priority,status"}]},
+             "options": {"response": {"response": {"responseFormat": "json"}}}},
+            creds=({"httpBasicAuth": CREDS[ji["credKey"]]} if has_cred else None),
+            disabled=(not has_cred),
+        ))
+        result.append(node(
+            parse_name, "n8n-nodes-base.code", 2, [280, y],
+            {"jsCode": JIRA_POLL_JS},
+            disabled=(not has_cred),
+        ))
+    return result
+
+
+# --- ClickUp Polling ---
+CLICKUP_POLL_JS = r"""
+// Parse les taches ClickUp recentes en format normalise.
+const data = $json;
+const tasks = data.tasks || [];
+const results = [];
+for (const t of tasks) {
+  const assignees = (t.assignees || []).map(a => a.username || a.email || '').join(', ');
+  results.push({json: {
+    headers: {},
+    body: {
+      platform: 'clickup',
+      channel_id: t.list ? t.list.id : '',
+      message_id: t.id,
+      user_id: (t.creator || {}).id || '',
+      user_name: (t.creator || {}).username || '',
+      text: (t.name || '') + (t.description ? ' — ' + t.description : ''),
+      description: t.description || '',
+      list_id: t.list ? t.list.id : ''
+    },
+    query: { platform: 'clickup' }
+  }});
+}
+return results.length ? results : [{ json: { _empty: true } }];
+""".strip()
+
+
+def _clickup_poll_nodes():
+    """Genere Schedule + HTTP GET + Parse pour ClickUp."""
+    y = 1140
+    result = []
+    result.append(node(
+        "Schedule: ClickUp", "n8n-nodes-base.scheduleTrigger", 1.2, [-60, y],
+        {"rule": {"interval": [{"field": "minutes", "minutesInterval": 5}]}},
+    ))
+    result.append(node(
+        "Poll: ClickUp", "n8n-nodes-base.httpRequest", 4.2, [100, y],
+        {"method": "GET",
+         "url": "=https://api.clickup.com/api/v2/list/{{ $vars.CLICKUP_LIST_ID || '901222267724' }}/task",
+         "sendHeaders": True,
+         "headerParameters": {"parameters": [
+             {"name": "Authorization", "value": "={{ $vars.CLICKUP_API_TOKEN }}"}]},
+         "sendQuery": True,
+         "queryParameters": {"parameters": [
+             {"name": "order_by", "value": "updated"},
+             {"name": "reverse", "value": "true"},
+             {"name": "subtasks", "value": "true"},
+             {"name": "page", "value": "0"}]},
+         "options": {"response": {"response": {"responseFormat": "json"}}}},
+    ))
+    result.append(node(
+        "Parse: ClickUp", "n8n-nodes-base.code", 2, [280, y],
+        {"jsCode": CLICKUP_POLL_JS},
+    ))
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # Noeuds
 # --------------------------------------------------------------------------- #
 NOTE = (
-    "## AgentSupport - Pipeline v2 (multicanal, contexte enrichi)\n\n"
-    "CANAUX : Telegram | Webhook (Jira, Teams, ClickUp, GChat) | Email IMAP.\n"
-    "Normalise -> PG events -> societe -> ENRICHIR CONTEXTE -> AGENT CLAUDE\n"
-    "-> GARDE-FOUS (regle 5) -> ticket -> route N0/N1/N2/N3.\n\n"
-    "REPORTING : detection auto des demandes de tickets -> requete PG.\n"
-    "NOTIFICATION : chaque nouveau ticket alerte le groupe DEV MG.\n"
-    "N3 -> ClickUp (Escalades Agent IA) + alerte detaillee DEV MG.\n\n"
-    "LIVRAISON MULTI-CANAL : Telegram | Email | Jira comment | ClickUp comment.\n"
-    "Audit PG : final_response + ticket_events sur chaque reponse.\n\n"
-    "Genere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.\n\n"
-    "WEBHOOKS :\n"
-    "  /webhook/agent-support         (generique)\n"
-    "  /webhook/agent-support-jira    (Jira)\n"
-    "  /webhook/agent-support-teams   (Teams)\n"
-    "  /webhook/agent-support-reporting (GET, reporting API)\n\n"
-    "VARIABLES N8N A CREER :\n"
-    "CLICKUP_API_TOKEN, CLICKUP_LIST_ID, TELEGRAM_DEVMG_CHAT_ID,\n"
-    "TELEGRAM_BOT_TOKEN, SMTP_FROM (optionnel)"
+    "## AgentSupport - Pipeline v3 (multicanal complet)\n\n"
+    "CANAUX CONNECTES EN PERMANENCE :\n"
+    "  Telegram (support + admin) | IMAP x5 (Outlook/Email) |\n"
+    "  Jira x2 (Bazarchic + BeautyBay) | ClickUp | Webhooks (Teams, GChat)\n\n"
+    "BOITES IMAP :\n"
+    "  itsupport@bazarchic.com | itsupport@beautybay.com |\n"
+    "  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n"
+    "  support-odoo@regardbeauty.onmicrosoft.com\n\n"
+    "PIPELINE : Normalise -> PG events -> societe -> contexte enrichi ->\n"
+    "  AGENT CLAUDE -> GARDE-FOUS -> ticket -> N0/N1/N2/N3.\n\n"
+    "LIVRAISON : Telegram | Email | Jira comment | ClickUp comment.\n"
+    "Audit PG : final_response + ticket_events.\n\n"
+    "Genere depuis git (n8n/build_pipeline.py). Ne pas editer a la main."
 )
 
 nodes = [
@@ -1135,22 +1300,27 @@ nodes = [
     node("Webhook multicanal", "n8n-nodes-base.webhook", 1.1, [-60, 220], {
         "httpMethod": "POST", "path": "agent-support",
         "responseMode": "onReceived", "options": {}}),
-    # Email IMAP : désactivé tant que la credential IMAP n'est pas créée dans n8n.
-    node("Email IMAP (Outlook)", "n8n-nodes-base.emailReadImap", 2, [-60, 380],
-         {"options": {}},
-         creds=({"imap": CREDS["imap"]} if "imap" in CREDS else None),
-         disabled=("imap" not in CREDS)),
-    # Jira : le polling est fait par scripts/poll_jira.py (local) car n8n cloud
-    # est bloqué par les restrictions IP Atlassian. Les events arrivent directement
-    # dans la table events de Supabase.
-    # Webhooks dedies par plateforme (prets a recevoir quand les comptes sont configures)
-    node("Webhook Jira", "n8n-nodes-base.webhook", 1.1, [-60, 440], {
+
+    # --- Email IMAP : une boite par noeud, un adaptateur par plateforme ---
+    # Chaque noeud IMAP ecoute une boite Outlook/Email en permanence.
+    # Desactive si la credential n'a pas encore d'id dans credentials.json.
+    *_imap_nodes(),
+
+    # --- Webhooks dedies par plateforme ---
+    node("Webhook Jira", "n8n-nodes-base.webhook", 1.1, [-60, 740], {
         "httpMethod": "POST", "path": "agent-support-jira",
         "responseMode": "onReceived", "options": {}}),
-    node("Webhook Teams", "n8n-nodes-base.webhook", 1.1, [-60, 540], {
+    node("Webhook Teams", "n8n-nodes-base.webhook", 1.1, [-60, 840], {
         "httpMethod": "POST", "path": "agent-support-teams",
         "responseMode": "onReceived", "options": {}}),
-    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 660]),
+
+    # --- Jira Polling : recupere les issues recentes toutes les 5 min ---
+    *_jira_poll_nodes(),
+
+    # --- ClickUp Polling : recupere les taches recentes ---
+    *_clickup_poll_nodes(),
+
+    node("Declencheur manuel", "n8n-nodes-base.manualTrigger", 1, [-60, 1160]),
 
     # --- Filtre Telegram (mention @itmg_support_bot ou DM) ---
     node("Filtre Telegram (mention)", "n8n-nodes-base.code", 2, [100, 60],
@@ -1433,8 +1603,17 @@ connections = merge_conn(
         ("Webhook multicanal", "Normaliser (multicanal)"),
         ("Webhook Jira", "Normaliser (multicanal)"),
         ("Webhook Teams", "Normaliser (multicanal)"),
-        ("Email IMAP (Outlook)", "Normaliser (multicanal)"),
         ("Declencheur manuel", "Normaliser (multicanal)"),
+        # --- IMAP (5 boites Outlook/Email) → Normalisation ---
+        *[(f"Email: {mb['label']}", "Normaliser (multicanal)") for mb in IMAP_MAILBOXES],
+        # --- Jira Polling → Parse → Normalisation ---
+        *[(f"Schedule: {ji['label']}", f"Poll: {ji['label']}") for ji in JIRA_INSTANCES],
+        *[(f"Poll: {ji['label']}", f"Parse: {ji['label']}") for ji in JIRA_INSTANCES],
+        *[(f"Parse: {ji['label']}", "Normaliser (multicanal)") for ji in JIRA_INSTANCES],
+        # --- ClickUp Polling → Parse → Normalisation ---
+        ("Schedule: ClickUp", "Poll: ClickUp"),
+        ("Poll: ClickUp", "Parse: ClickUp"),
+        ("Parse: ClickUp", "Normaliser (multicanal)"),
         # --- Vision ---
         ("Normaliser (multicanal)", "A une image ?"),
         ("A une image ?", "TG: getFile", 0),

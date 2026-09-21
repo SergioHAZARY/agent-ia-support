@@ -169,19 +169,115 @@ def ensure_admin_credential():
         return None
 
 
-def update_credentials_json(admin_cred):
-    """Met a jour credentials.json avec la reference du bot admin."""
+def update_credentials_json(updates):
+    """Met a jour credentials.json avec les references de credentials creees."""
     creds_path = os.path.join(HERE, "credentials.json")
     if not os.path.exists(creds_path):
         return
     data = json.load(open(creds_path, encoding="utf-8"))
-    if "telegramAdminApi" in data and data["telegramAdminApi"].get("id") == admin_cred["id"]:
-        return
-    data["telegramAdminApi"] = admin_cred
-    with open(creds_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    print(f"  credentials.json mis a jour avec telegramAdminApi")
+    changed = False
+    for json_key, cred_info in updates.items():
+        if cred_info and (json_key not in data or data[json_key].get("id") != cred_info["id"]):
+            data[json_key] = cred_info
+            changed = True
+            print(f"  credentials.json: {json_key} -> id={cred_info['id']}")
+    if changed:
+        with open(creds_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+
+# --- Credentials IMAP pour les boites Outlook/Email ---
+IMAP_ACCOUNTS = [
+    {"json_key": "imapBazarchic",      "name": "IMAP Bazarchic",
+     "env_user": "IMAP_BAZARCHIC_USER",      "env_pass": "IMAP_BAZARCHIC_PASS",
+     "host": "outlook.office365.com", "default_user": "itsupport@bazarchic.com"},
+    {"json_key": "imapBeautyBay",      "name": "IMAP BeautyBay",
+     "env_user": "IMAP_BEAUTYBAY_USER",      "env_pass": "IMAP_BEAUTYBAY_PASS",
+     "host": "outlook.office365.com", "default_user": "itsupport@beautybay.com"},
+    {"json_key": "imapAtlasForMen",    "name": "IMAP AtlasForMen",
+     "env_user": "IMAP_ATLASFORMEN_USER",    "env_pass": "IMAP_ATLASFORMEN_PASS",
+     "host": "outlook.office365.com", "default_user": "thaina_aa@atlasformen.com"},
+    {"json_key": "imapFrancoisSaget",  "name": "IMAP FrancoisSaget",
+     "env_user": "IMAP_FSAGET_USER",         "env_pass": "IMAP_FSAGET_PASS",
+     "host": "outlook.office365.com", "default_user": "support-it@francoisesaget.com"},
+    {"json_key": "imapRegardBeauty",   "name": "IMAP RegardBeauty",
+     "env_user": "IMAP_REGARDBEAUTY_USER",   "env_pass": "IMAP_REGARDBEAUTY_PASS",
+     "host": "outlook.office365.com", "default_user": "support-odoo@regardbeauty.onmicrosoft.com"},
+]
+
+
+def ensure_imap_credentials():
+    """Cree les credentials IMAP pour chaque boite mail si absentes."""
+    print("\n=== Credentials IMAP (Outlook/Email) ===")
+    st, body = call("GET", "/credentials", params={"limit": 200})
+    existing = {}
+    creds_list = body.get("data", body) if isinstance(body, dict) else (body if isinstance(body, list) else [])
+    for c in creds_list:
+        existing[c.get("name")] = c
+
+    results = {}
+    for acct in IMAP_ACCOUNTS:
+        cred_name = acct["name"]
+        if cred_name in existing:
+            print(f"  OK  {cred_name} (deja presente, id={existing[cred_name]['id']})")
+            results[acct["json_key"]] = {"id": existing[cred_name]["id"], "name": cred_name}
+            continue
+
+        user = os.environ.get(acct["env_user"], acct["default_user"])
+        password = os.environ.get(acct["env_pass"], "")
+        if not password:
+            print(f"  SKIP {cred_name} (pas de {acct['env_pass']}, a creer manuellement dans n8n)")
+            continue
+
+        payload = {
+            "name": cred_name,
+            "type": "imap",
+            "data": {
+                "host": acct["host"],
+                "port": 993,
+                "secure": True,
+                "user": user,
+                "password": password,
+            },
+        }
+        st2, r = call("POST", "/credentials", body=payload)
+        if st2 in (200, 201) and isinstance(r, dict) and r.get("id"):
+            print(f"  CREE {cred_name} -> id={r['id']}")
+            results[acct["json_key"]] = {"id": r["id"], "name": cred_name}
+        else:
+            print(f"  ERREUR {cred_name} : {st2} {str(r)[:200]}")
+    return results
+
+
+def ensure_jira_beautybay_credential():
+    """Cree la credential HTTP Basic pour Jira BeautyBay si absente."""
+    print("\n=== Credential Jira BeautyBay ===")
+    user = os.environ.get("JIRA_BEAUTYBAY_USER", "")
+    token = os.environ.get("JIRA_BEAUTYBAY_TOKEN", "")
+    if not user or not token:
+        print("  SKIP (pas de JIRA_BEAUTYBAY_USER/TOKEN)")
+        return None
+
+    cred_name = "Jira BeautyBay (HTTP Basic)"
+    st, body = call("GET", "/credentials", params={"limit": 200})
+    creds_list = body.get("data", body) if isinstance(body, dict) else (body if isinstance(body, list) else [])
+    for c in creds_list:
+        if c.get("name") == cred_name:
+            print(f"  OK  {cred_name} (deja presente, id={c['id']})")
+            return {"id": c["id"], "name": cred_name}
+
+    payload = {
+        "name": cred_name,
+        "type": "httpBasicAuth",
+        "data": {"user": user, "password": token},
+    }
+    st2, r = call("POST", "/credentials", body=payload)
+    if st2 in (200, 201) and isinstance(r, dict) and r.get("id"):
+        print(f"  CREE {cred_name} -> id={r['id']}")
+        return {"id": r["id"], "name": cred_name}
+    print(f"  ERREUR : {st2} {str(r)[:200]}")
+    return None
 
 
 def main():
@@ -191,9 +287,22 @@ def main():
         sys.exit(2)
 
     ensure_variables()
+
+    # Credentials
+    cred_updates = {}
     admin_cred = ensure_admin_credential()
     if admin_cred:
-        update_credentials_json(admin_cred)
+        cred_updates["telegramAdminApi"] = admin_cred
+
+    imap_creds = ensure_imap_credentials()
+    cred_updates.update(imap_creds)
+
+    jira_bb = ensure_jira_beautybay_credential()
+    if jira_bb:
+        cred_updates["jiraHttpBeautyBay"] = jira_bb
+
+    if cred_updates:
+        update_credentials_json(cred_updates)
 
     # Rebuild le pipeline (credentials.json potentiellement mis a jour)
     print("\n=== Build pipeline ===")
