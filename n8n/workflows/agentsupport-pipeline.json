@@ -10,7 +10,7 @@
         -320
       ],
       "parameters": {
-        "content": "## AgentSupport - Pipeline v3 (multicanal complet)\n\nCANAUX CONNECTES EN PERMANENCE :\n  Telegram (support + admin) | IMAP x5 (Outlook/Email) |\n  Jira x2 (Bazarchic + BeautyBay) | ClickUp | Webhooks (Teams, GChat)\n\nBOITES IMAP :\n  itsupport@bazarchic.com | itsupport@beautybay.com |\n  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n  support-odoo@regardbeauty.onmicrosoft.com\n\nPIPELINE : Normalise -> PG events -> societe -> contexte enrichi ->\n  AGENT CLAUDE -> GARDE-FOUS -> ticket -> N0/N1/N2/N3.\n\nLIVRAISON : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.",
+        "content": "## AgentSupport - Pipeline v3 (multicanal complet)\n\nCANAUX CONNECTES EN PERMANENCE :\n  Telegram (support + admin) | Outlook OAuth2 x5 |\n  Webhook Email (Power Automate bridge) |\n  Jira x2 (Bazarchic + BeautyBay) | ClickUp | Webhooks (Teams, GChat)\n\nBOITES EMAIL :\n  itsupport@bazarchic.com | itsupport@beautybay.com |\n  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n  support-odoo@regardbeauty.onmicrosoft.com\n\nPIPELINE : Normalise -> PG events -> societe -> contexte enrichi ->\n  AGENT CLAUDE -> GARDE-FOUS -> ticket -> N0/N1/N2/N3.\n\nLIVRAISON : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.",
         "height": 320,
         "width": 680
       }
@@ -185,6 +185,33 @@
         "jsCode": "// Normalise un email Microsoft Outlook vers le format pipeline.\n// Le noeud Outlook Trigger fournit : subject, bodyPreview, from, toRecipients, etc.\nconst mail = $json;\nconst fromAddr = ((mail.from || {}).emailAddress || {}).address || '';\nconst fromName = ((mail.from || {}).emailAddress || {}).name || '';\nconst toList = mail.toRecipients || [];\nconst toAddr = toList.length > 0 ? (toList[0].emailAddress || {}).address || '' : '';\nconst body = mail.bodyPreview || mail.body?.content || '';\nconst subject = mail.subject || '';\n\nreturn [{json: {\n  textPlain: body,\n  subject: subject,\n  messageId: mail.id || mail.internetMessageId || '',\n  uid: mail.id || '',\n  from: { value: [{ address: fromAddr, name: fromName }] },\n  to: { value: [{ address: toAddr.toLowerCase() }] }\n}}];"
       },
       "disabled": true
+    },
+    {
+      "name": "Webhook Email",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -60,
+        700
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-support-email",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "name": "Norm: Webhook Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Normalise un email recu via webhook (Power Automate bridge) vers le format pipeline.\nconst d = $json.body || $json;\nconst fromAddr = (d.from || d.fromAddress || '').toLowerCase();\nconst fromName = d.fromName || d.senderName || '';\nconst toAddr = (d.to || d.toAddress || d.mailbox || '').toLowerCase();\nconst body = d.body || d.bodyPreview || d.content || '';\nconst subject = d.subject || '';\nconst msgId = d.messageId || d.internetMessageId || d.id || '';\n\nreturn [{json: {\n  textPlain: body,\n  subject: subject,\n  messageId: msgId,\n  uid: msgId,\n  from: { value: [{ address: fromAddr, name: fromName }] },\n  to: { value: [{ address: toAddr }] }\n}}];"
+      }
     },
     {
       "name": "Webhook Jira",
@@ -1795,6 +1822,28 @@
       ]
     },
     "Norm: Outlook RegardBeauty": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Email": {
+      "main": [
+        [
+          {
+            "node": "Norm: Webhook Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Norm: Webhook Email": {
       "main": [
         [
           {

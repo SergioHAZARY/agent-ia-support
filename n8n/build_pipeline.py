@@ -1310,15 +1310,41 @@ def _clickup_poll_nodes():
     return result
 
 
+# --- Webhook Email (Power Automate bridge) ---
+# Quand Outlook OAuth2 est bloque par Azure AD admin consent, Power Automate
+# (premiere partie Microsoft, pas besoin de consent) envoie les emails ici.
+# Format attendu : { from, fromName, to, subject, body, messageId, receivedAt }
+EMAIL_WEBHOOK_NORMALIZE_JS = r"""
+// Normalise un email recu via webhook (Power Automate bridge) vers le format pipeline.
+const d = $json.body || $json;
+const fromAddr = (d.from || d.fromAddress || '').toLowerCase();
+const fromName = d.fromName || d.senderName || '';
+const toAddr = (d.to || d.toAddress || d.mailbox || '').toLowerCase();
+const body = d.body || d.bodyPreview || d.content || '';
+const subject = d.subject || '';
+const msgId = d.messageId || d.internetMessageId || d.id || '';
+
+return [{json: {
+  textPlain: body,
+  subject: subject,
+  messageId: msgId,
+  uid: msgId,
+  from: { value: [{ address: fromAddr, name: fromName }] },
+  to: { value: [{ address: toAddr }] }
+}}];
+""".strip()
+
+
 # --------------------------------------------------------------------------- #
 # Noeuds
 # --------------------------------------------------------------------------- #
 NOTE = (
     "## AgentSupport - Pipeline v3 (multicanal complet)\n\n"
     "CANAUX CONNECTES EN PERMANENCE :\n"
-    "  Telegram (support + admin) | IMAP x5 (Outlook/Email) |\n"
+    "  Telegram (support + admin) | Outlook OAuth2 x5 |\n"
+    "  Webhook Email (Power Automate bridge) |\n"
     "  Jira x2 (Bazarchic + BeautyBay) | ClickUp | Webhooks (Teams, GChat)\n\n"
-    "BOITES IMAP :\n"
+    "BOITES EMAIL :\n"
     "  itsupport@bazarchic.com | itsupport@beautybay.com |\n"
     "  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n"
     "  support-odoo@regardbeauty.onmicrosoft.com\n\n"
@@ -1340,10 +1366,19 @@ nodes = [
         "httpMethod": "POST", "path": "agent-support",
         "responseMode": "onReceived", "options": {}}),
 
-    # --- Email IMAP : une boite par noeud, un adaptateur par plateforme ---
-    # Chaque noeud IMAP ecoute une boite Outlook/Email en permanence.
+    # --- Email Outlook OAuth2 : une boite par noeud ---
     # Desactive si la credential n'a pas encore d'id dans credentials.json.
+    # Si Azure AD admin consent bloque OAuth2, le webhook email ci-dessous prend le relais.
     *_imap_nodes(),
+
+    # --- Webhook Email (Power Automate bridge) ---
+    # POST /webhook/agent-support-email — accepte les emails via Power Automate
+    # quand Outlook OAuth2 est bloque par Azure AD admin consent.
+    node("Webhook Email", "n8n-nodes-base.webhook", 1.1, [-60, 700], {
+        "httpMethod": "POST", "path": "agent-support-email",
+        "responseMode": "onReceived", "options": {}}),
+    node("Norm: Webhook Email", "n8n-nodes-base.code", 2, [120, 700],
+         {"jsCode": EMAIL_WEBHOOK_NORMALIZE_JS}),
 
     # --- Webhooks dedies par plateforme ---
     node("Webhook Jira", "n8n-nodes-base.webhook", 1.1, [-60, 740], {
@@ -1646,6 +1681,9 @@ connections = merge_conn(
         # --- Outlook OAuth2 (5 boites) → Norm → Normalisation ---
         *[(f"Outlook: {mb['label']}", f"Norm: {mb['label']}") for mb in EMAIL_ACCOUNTS],
         *[(f"Norm: {mb['label']}", "Normaliser (multicanal)") for mb in EMAIL_ACCOUNTS],
+        # --- Webhook Email (Power Automate bridge) → Norm → Normalisation ---
+        ("Webhook Email", "Norm: Webhook Email"),
+        ("Norm: Webhook Email", "Normaliser (multicanal)"),
         # --- Jira Polling → Parse → Normalisation ---
         *[(f"Schedule: {ji['label']}", f"Poll: {ji['label']}") for ji in JIRA_INSTANCES],
         *[(f"Poll: {ji['label']}", f"Parse: {ji['label']}") for ji in JIRA_INSTANCES],
