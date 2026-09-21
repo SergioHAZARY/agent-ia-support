@@ -652,13 +652,15 @@ return [{ json: { notif_text: msg } }];
 # ----------- Admin Bot (@itmg_admin_bot) — branche reporting en temps reel ---
 
 ADMIN_PARSE_JS = r"""
-// Parse la commande admin du bot @itmg_admin_bot.
+// Parse la commande admin du bot @itmg_admin_bot ou du webhook web.
 // Detection independante : cmd, groupBy et statusFilter sont analyses separement.
 const j = $json;
 const msg = j.message || j.channel_post || {};
-const text = (msg.text || '').toLowerCase().trim();
-const chatId = String((msg.chat || {}).id || '');
-const chatType = (msg.chat || {}).type || 'private';
+// Support webhook web : body.text directement
+const text = (msg.text || j.body?.text || j.text || '').toLowerCase().trim();
+const chatId = String((msg.chat || {}).id || j.body?.user_id || j.user_id || 'web');
+const chatType = (msg.chat || {}).type || (j.body ? 'web' : 'private');
+const isWeb = chatType === 'web' || j.body?.platform === 'web';
 
 // 1. Commande principale
 let cmd = 'tickets';
@@ -708,7 +710,7 @@ for (const [key, aliases] of Object.entries(tenantAliases)) {
   if (aliases.some(a => text.toLowerCase().includes(a))) { tenantFilter = key; break; }
 }
 
-return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter } }];
+return [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter, isWeb } }];
 """.strip()
 
 ADMIN_FORMAT_JS = r"""
@@ -1490,6 +1492,19 @@ nodes = [
         "httpMethod": "POST", "path": "agent-support",
         "responseMode": "onReceived", "options": {}}),
 
+    # --- Webhook Web (Streamlit / interface web) ---
+    # Synchrone : attend la fin du pipeline et retourne la reponse en JSON.
+    node("Webhook Web Support", "n8n-nodes-base.webhook", 1.1, [-60, 340], {
+        "httpMethod": "POST", "path": "agent-support-web",
+        "responseMode": "responseNode",
+        "options": {"responseHeaders": {"entries": [
+            {"name": "Access-Control-Allow-Origin", "value": "*"}]}}}),
+    node("Webhook Web Admin", "n8n-nodes-base.webhook", 1.1, [-60, 1180], {
+        "httpMethod": "POST", "path": "agent-admin-web",
+        "responseMode": "responseNode",
+        "options": {"responseHeaders": {"entries": [
+            {"name": "Access-Control-Allow-Origin", "value": "*"}]}}}),
+
     # --- Email Outlook OAuth2 : une boite par noeud ---
     # Desactive si la credential n'a pas encore d'id dans credentials.json.
     # Si Azure AD admin consent bloque OAuth2, le webhook email ci-dessous prend le relais.
@@ -1698,7 +1713,7 @@ nodes = [
                             "conditions": [{"leftValue": "={{ $json.platform }}",
                                             "rightValue": p,
                                             "operator": {"type": "string", "operation": "equals"}}]},
-             "outputKey": p} for p in ["telegram", "email", "jira", "clickup"]]},
+             "outputKey": p} for p in ["telegram", "email", "jira", "clickup", "web"]]},
         "options": {"fallbackOutput": "extra"}}),
     node("Telegram: envoyer reponse", "n8n-nodes-base.telegram", 1.2, [3100, 120], {
         "operation": "sendMessage",
@@ -1744,8 +1759,19 @@ nodes = [
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.body) }}",
         "options": {"response": {"response": {"responseFormat": "json"}}}}),
+    # Web : retourner la reponse JSON au client Streamlit via Respond to Webhook
+    node("Web: repondre JSON", "n8n-nodes-base.respondToWebhook", 1.1, [3100, 600], {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply_text: $json.reply_text,"
+                        " ticket_ref: $json.ticket_ref || null,"
+                        " category: ($json._source||{}).category || null,"
+                        " priority: ($json._source||{}).priority || null,"
+                        " autonomy_level: $json.autonomy_level || null,"
+                        " resolution_status: $json.resolution_status || null }) }}",
+        "options": {"responseHeaders": {"entries": [
+            {"name": "Content-Type", "value": "application/json"}]}}}),
     # Fallback : Teams, GChat, etc. — la reponse est enregistree en PG meme si non livree
-    node("Canal sans livraison directe", "n8n-nodes-base.noOp", 1, [3100, 680]),
+    node("Canal sans livraison directe", "n8n-nodes-base.noOp", 1, [3100, 740]),
     # Audit PG : enregistrer la reponse finale + ticket_events (pour tickets uniquement)
     pg_node("PG: audit reponse", [3560, 300], PG_AUDIT_SQL,
             "={{ [$('Router par canal').item.json.reply_text || '', "
@@ -1803,6 +1829,24 @@ nodes = [
         "headerParameters": {"parameters": [
             {"name": "Content-Type", "value": "application/json"}]}},
         on_error="continueRegularOutput"),
+    # Routeur web/Telegram pour l'admin
+    node("Admin: web ou Telegram ?", "n8n-nodes-base.if", 2.3, [1000, 1120], {
+        "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                       "combinator": "and",
+                       "conditions": [{"id": "isWeb",
+                                       "leftValue": "={{ $json.isWeb }}",
+                                       "rightValue": True,
+                                       "operator": {"type": "boolean", "operation": "true"}}]},
+        "options": {}}),
+    # Reponse JSON pour le client web admin
+    node("Admin: repondre JSON", "n8n-nodes-base.respondToWebhook", 1.1, [1200, 1180], {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply_text: $json.reply,"
+                        " csv_data: $json.csv_data || null,"
+                        " csv_filename: $json.csv_filename || null }) }}",
+        "options": {"responseHeaders": {"entries": [
+            {"name": "Content-Type", "value": "application/json"}]}}}),
+
     node("Envoyer CSV Telegram", "n8n-nodes-base.code", 2, [1200, 940], {
         "jsCode": r"""
 const chatId = String($json.chatId);
@@ -1961,7 +2005,9 @@ connections = merge_conn(
         ("Router par canal", "Email: repondre", 1),
         ("Router par canal", "Preparer commentaire Jira", 2),
         ("Router par canal", "Preparer commentaire ClickUp", 3),
-        ("Router par canal", "Canal sans livraison directe", 4),
+        ("Router par canal", "Web: repondre JSON", 4),
+        ("Router par canal", "Canal sans livraison directe", 5),
+        ("Web: repondre JSON", "PG: audit reponse"),
         ("Preparer commentaire Jira", "Jira: commenter"),
         ("Preparer commentaire ClickUp", "ClickUp: commenter"),
         # --- Audit PG : toutes les livraisons convergent ---
@@ -1973,11 +2019,16 @@ connections = merge_conn(
         # --- Reporting ---
         ("Webhook reporting", "PG: tickets en cours"),
         ("PG: tickets en cours", "Formater le rapport"),
-        # --- Bot Admin (@itmg_admin_bot) ---
+        # --- Webhook Web Support → Normalisation ---
+        ("Webhook Web Support", "Normaliser (multicanal)"),
+        # --- Bot Admin (@itmg_admin_bot) + Webhook Web Admin ---
         ("AdminTrigger", "Parser admin"),
+        ("Webhook Web Admin", "Parser admin"),
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
-        ("Formater admin", "Admin: est-ce un export ?"),
+        ("Formater admin", "Admin: web ou Telegram ?"),
+        ("Admin: web ou Telegram ?", "Admin: repondre JSON", 0),
+        ("Admin: web ou Telegram ?", "Admin: est-ce un export ?", 1),
         ("Admin: est-ce un export ?", "Envoyer CSV Telegram", 0),
         ("Admin: est-ce un export ?", "HTTP: reponse admin", 1),
     ]),
