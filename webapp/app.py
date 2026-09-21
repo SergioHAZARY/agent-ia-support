@@ -11,7 +11,10 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-N8N_BASE = os.getenv("N8N_WEBHOOK_BASE", "https://dev-ai.app.n8n.cloud")
+try:
+    N8N_BASE = st.secrets["N8N_WEBHOOK_BASE"]
+except Exception:
+    N8N_BASE = os.getenv("N8N_WEBHOOK_BASE", "https://dev-ai.app.n8n.cloud")
 WEBHOOK_SUPPORT = f"{N8N_BASE}/webhook/agent-support-web"
 WEBHOOK_ADMIN = f"{N8N_BASE}/webhook/agent-admin-web"
 
