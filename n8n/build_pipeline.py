@@ -1805,37 +1805,39 @@ nodes = [
         on_error="continueRegularOutput"),
     node("Envoyer CSV Telegram", "n8n-nodes-base.code", 2, [1200, 940], {
         "jsCode": r"""
-// Envoie le CSV directement a l'API Telegram sendDocument
+// Envoie le CSV via Telegram sendDocument en utilisant fetch + FormData natif
 const chatId = $json.chatId;
-const caption = $json.reply || '';
+const caption = ($json.reply || '').slice(0, 1024);
 const csvData = $json.csv_data || '';
 const filename = $json.csv_filename || 'tickets_export.csv';
-
-// Construire le FormData manuellement
-const boundary = '----n8nCSVBoundary' + Date.now();
-const nl = '\r\n';
-let body = '';
-body += '--' + boundary + nl;
-body += 'Content-Disposition: form-data; name="chat_id"' + nl + nl + chatId + nl;
-body += '--' + boundary + nl;
-body += 'Content-Disposition: form-data; name="caption"' + nl + nl + caption + nl;
-body += '--' + boundary + nl;
-body += 'Content-Disposition: form-data; name="parse_mode"' + nl + nl + 'HTML' + nl;
-body += '--' + boundary + nl;
-body += 'Content-Disposition: form-data; name="document"; filename="' + filename + '"' + nl;
-body += 'Content-Type: text/csv' + nl + nl;
-body += csvData + nl;
-body += '--' + boundary + '--' + nl;
-
 const token = $vars.TELEGRAM_ADMIN_BOT_TOKEN;
-const resp = await this.helpers.httpRequest({
-  method: 'POST',
-  url: 'https://api.telegram.org/bot' + token + '/sendDocument',
-  headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
-  body: body,
-  returnFullResponse: true,
-});
-return [{ json: { ok: true, chatId, sent: resp.statusCode || 200 } }];
+const url = 'https://api.telegram.org/bot' + token + '/sendDocument';
+
+// Node.js 18+ : fetch, Blob et FormData sont disponibles globalement
+const csvBlob = new Blob([csvData], { type: 'text/csv; charset=utf-8' });
+const form = new FormData();
+form.append('chat_id', chatId);
+form.append('caption', caption);
+form.append('parse_mode', 'HTML');
+form.append('document', csvBlob, filename);
+
+const resp = await fetch(url, { method: 'POST', body: form });
+const result = await resp.json();
+
+if (!result.ok) {
+  // Fallback : envoyer le message texte sans fichier
+  await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: caption + '\n\n⚠️ Le fichier CSV est trop volumineux (' + csvData.length + ' car.). Utilisez /export avec un filtre plus precis.',
+      parse_mode: 'HTML'
+    })
+  });
+}
+
+return [{ json: { ok: result.ok, chatId, file_size: csvData.length } }];
 """.strip()}),
 ]
 
