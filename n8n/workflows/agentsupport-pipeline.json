@@ -53,6 +53,56 @@
       "webhookId": "768bfa2e-8f92-5735-9029-b75e8324403c"
     },
     {
+      "name": "Webhook Web Support",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -60,
+        340
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-support-web",
+        "responseMode": "responseNode",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "webhookId": "2800e13a-0e7f-5141-b976-bf01c927a433"
+    },
+    {
+      "name": "Webhook Web Admin",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -60,
+        1180
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-admin-web",
+        "responseMode": "responseNode",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "webhookId": "9f8c83a6-33a4-5177-867b-f19a0693e172"
+    },
+    {
       "name": "Webhook Email",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
@@ -1168,6 +1218,25 @@
                 ]
               },
               "outputKey": "clickup"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.platform }}",
+                    "rightValue": "web",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "web"
             }
           ]
         },
@@ -1318,12 +1387,35 @@
       }
     },
     {
+      "name": "Web: repondre JSON",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3100,
+        600
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply_text: $json.reply_text, ticket_ref: $json.ticket_ref || null, category: ($json._source||{}).category || null, priority: ($json._source||{}).priority || null, autonomy_level: $json.autonomy_level || null, resolution_status: $json.resolution_status || null }) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "Canal sans livraison directe",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
         3100,
-        680
+        740
       ],
       "parameters": {}
     },
@@ -1457,7 +1549,7 @@
         1020
       ],
       "parameters": {
-        "jsCode": "// Parse la commande admin du bot @itmg_admin_bot.\n// Detection independante : cmd, groupBy et statusFilter sont analyses separement.\nconst j = $json;\nconst msg = j.message || j.channel_post || {};\nconst text = (msg.text || '').toLowerCase().trim();\nconst chatId = String((msg.chat || {}).id || '');\nconst chatType = (msg.chat || {}).type || 'private';\n\n// 1. Commande principale\nlet cmd = 'tickets';\nif (/^\\/(start)\\b/.test(text)) cmd = 'start';\nelse if (/^\\/help\\b|^aide\\b/.test(text)) cmd = 'help';\nelse if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';\nelse if (/\\/stats\\b|statistiq/i.test(text)) cmd = 'stats';\nelse if (/\\/recents?\\b|derniers?\\b|24h/i.test(text)) cmd = 'recents';\nelse if (/\\/export\\b|\\bexport\\b|exporter|csv|dump|excel|xls|fichier/i.test(text)) cmd = 'export';\n\n// 2. Groupement (detecte independamment de la commande)\nlet groupBy = 'categorie';\nif (/\\b(par\\s+)?(canal|canaux|plateforme|channel)\\b/i.test(text)) groupBy = 'canal';\nelse if (/\\b(par\\s+)?(departement|societe|tenant|entite)\\b/i.test(text)) groupBy = 'tenant';\nelse if (/\\b(par\\s+)?(priorite|urgence)\\b/i.test(text)) groupBy = 'priorite';\nelse if (/\\b(par\\s+)?(statut|status|etat)\\b/i.test(text)) groupBy = 'statut';\n\n// 3. Filtre par statut (detecte independamment)\nlet statusFilter = '';\nif (/\\b(ouverts?|open|nouveau)\\b/i.test(text)) statusFilter = 'ouvert';\nelse if (/\\ben[\\s._-]?cours\\b|in[\\s._-]?progress|traitement/i.test(text)) statusFilter = 'en_cours';\nelse if (/\\b(fini|termin|clos|closed?|ferm|resolu|resolved|complet)\\b/i.test(text)) statusFilter = 'clos';\n\n// 4. Filtre par canal/plateforme (detecte independamment)\nlet channelFilter = '';\nif (/\\b(outlook|email|mail|courriel|boite)\\b/i.test(text)) channelFilter = 'email';\nelse if (/\\b(telegram)\\b/i.test(text)) channelFilter = 'telegram';\nelse if (/\\b(teams)\\b/i.test(text)) channelFilter = 'teams';\nelse if (/\\b(google\\s*chat|gchat|g-chat|hangouts?|chat\\s+google)\\b/i.test(text)) channelFilter = 'google_chat';\nelse if (/\\b(jira|jsm)\\b/i.test(text)) channelFilter = 'jira';\nelse if (/\\b(clickup|click[\\s-]?up)\\b/i.test(text)) channelFilter = 'clickup';\nelse if (/\\b(confluence|wiki)\\b/i.test(text)) channelFilter = 'confluence';\n\n// 5. Filtre par tenant/societe — matching generique, pas de liste hardcodee.\n// Extrait le dernier mot significatif apres un indicateur de societe.\nlet tenantFilter = '';\nconst tenantAliases = {\n  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],\n  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],\n  'bouchara': ['bouchara'],\n  'liban': ['liban','it support liban','itsupportliban'],\n  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],\n  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],\n  'devmg': ['dev mg','devmg','dev-mg']\n};\nfor (const [key, aliases] of Object.entries(tenantAliases)) {\n  if (aliases.some(a => text.toLowerCase().includes(a))) { tenantFilter = key; break; }\n}\n\nreturn [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter } }];"
+        "jsCode": "// Parse la commande admin du bot @itmg_admin_bot ou du webhook web.\n// Detection independante : cmd, groupBy et statusFilter sont analyses separement.\nconst j = $json;\nconst msg = j.message || j.channel_post || {};\n// Support webhook web : body.text directement\nconst text = (msg.text || j.body?.text || j.text || '').toLowerCase().trim();\nconst chatId = String((msg.chat || {}).id || j.body?.user_id || j.user_id || 'web');\nconst chatType = (msg.chat || {}).type || (j.body ? 'web' : 'private');\nconst isWeb = chatType === 'web' || j.body?.platform === 'web';\n\n// 1. Commande principale\nlet cmd = 'tickets';\nif (/^\\/(start)\\b/.test(text)) cmd = 'start';\nelse if (/^\\/help\\b|^aide\\b/.test(text)) cmd = 'help';\nelse if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';\nelse if (/\\/stats\\b|statistiq/i.test(text)) cmd = 'stats';\nelse if (/\\/recents?\\b|derniers?\\b|24h/i.test(text)) cmd = 'recents';\nelse if (/\\/export\\b|\\bexport\\b|exporter|csv|dump|excel|xls|fichier/i.test(text)) cmd = 'export';\n\n// 2. Groupement (detecte independamment de la commande)\nlet groupBy = 'categorie';\nif (/\\b(par\\s+)?(canal|canaux|plateforme|channel)\\b/i.test(text)) groupBy = 'canal';\nelse if (/\\b(par\\s+)?(departement|societe|tenant|entite)\\b/i.test(text)) groupBy = 'tenant';\nelse if (/\\b(par\\s+)?(priorite|urgence)\\b/i.test(text)) groupBy = 'priorite';\nelse if (/\\b(par\\s+)?(statut|status|etat)\\b/i.test(text)) groupBy = 'statut';\n\n// 3. Filtre par statut (detecte independamment)\nlet statusFilter = '';\nif (/\\b(ouverts?|open|nouveau)\\b/i.test(text)) statusFilter = 'ouvert';\nelse if (/\\ben[\\s._-]?cours\\b|in[\\s._-]?progress|traitement/i.test(text)) statusFilter = 'en_cours';\nelse if (/\\b(fini|termin|clos|closed?|ferm|resolu|resolved|complet)\\b/i.test(text)) statusFilter = 'clos';\n\n// 4. Filtre par canal/plateforme (detecte independamment)\nlet channelFilter = '';\nif (/\\b(outlook|email|mail|courriel|boite)\\b/i.test(text)) channelFilter = 'email';\nelse if (/\\b(telegram)\\b/i.test(text)) channelFilter = 'telegram';\nelse if (/\\b(teams)\\b/i.test(text)) channelFilter = 'teams';\nelse if (/\\b(google\\s*chat|gchat|g-chat|hangouts?|chat\\s+google)\\b/i.test(text)) channelFilter = 'google_chat';\nelse if (/\\b(jira|jsm)\\b/i.test(text)) channelFilter = 'jira';\nelse if (/\\b(clickup|click[\\s-]?up)\\b/i.test(text)) channelFilter = 'clickup';\nelse if (/\\b(confluence|wiki)\\b/i.test(text)) channelFilter = 'confluence';\n\n// 5. Filtre par tenant/societe — matching generique, pas de liste hardcodee.\n// Extrait le dernier mot significatif apres un indicateur de societe.\nlet tenantFilter = '';\nconst tenantAliases = {\n  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],\n  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],\n  'bouchara': ['bouchara'],\n  'liban': ['liban','it support liban','itsupportliban'],\n  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],\n  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],\n  'devmg': ['dev mg','devmg','dev-mg']\n};\nfor (const [key, aliases] of Object.entries(tenantAliases)) {\n  if (aliases.some(a => text.toLowerCase().includes(a))) { tenantFilter = key; break; }\n}\n\nreturn [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter, isWeb } }];"
       }
     },
     {
@@ -1491,7 +1583,7 @@
         1020
       ],
       "parameters": {
-        "jsCode": "// Formate la reponse admin — groupement par categorie/canal/priorite/tenant/statut.\n// chatId est transmis dans la sortie pour le noeud HTTP qui suit.\nconst cmdData = $('Parser admin').first().json;\nconst cmd = cmdData.cmd;\nconst groupBy = cmdData.groupBy;\nconst chatId = cmdData.chatId;\nconst statusFilter = cmdData.statusFilter || '';\nconst channelFilter = cmdData.channelFilter || '';\nconst tenantFilter = cmdData.tenantFilter || '';\nconst allTickets = $input.all().map(i => i.json).filter(t => t.id);\n\nfunction esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\nconst prioIcon = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'};\nconst statusMap = {\n  'ouvert': ['ouvert','open','nouveau','new'],\n  'en_cours': ['en_cours','in_progress','en cours','attente','pending','escalade'],\n  'clos': ['clos','closed','resolu','resolved','termine','done','annule','cancelled']\n};\nfunction matchStatus(s, filter) {\n  if (!filter) return true;\n  const ls = String(s||'').toLowerCase();\n  return (statusMap[filter]||[]).some(k => ls.includes(k) || ls === k);\n}\nfunction isOpen(s) { return !matchStatus(s, 'clos'); }\n\nconst channelMap = {\n  'email': ['email','outlook','mail','imap','smtp'],\n  'telegram': ['telegram'],\n  'teams': ['teams','microsoft teams'],\n  'google_chat': ['google_chat','google chat','gchat','hangouts'],\n  'jira': ['jira','jsm','jira service'],\n  'clickup': ['clickup','click up'],\n  'confluence': ['confluence','wiki']\n};\nfunction matchChannel(platform, filter) {\n  if (!filter) return true;\n  const lp = String(platform||'').toLowerCase();\n  return (channelMap[filter]||[]).some(k => lp.includes(k) || lp === k);\n}\n\nconst tenantMap = {\n  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],\n  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],\n  'bouchara': ['bouchara'],\n  'liban': ['liban','it support liban','itsupportliban'],\n  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],\n  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],\n  'devmg': ['dev mg','devmg','dev-mg']\n};\nfunction matchTenant(name, filter) {\n  if (!filter) return true;\n  const ln = String(name||'').toLowerCase();\n  return (tenantMap[filter]||[]).some(k => ln.includes(k) || ln === k);\n}\nconst statusIcon = s => {\n  const ls = String(s||'').toLowerCase();\n  if (statusMap.clos.some(k => ls.includes(k))) return '✅';\n  if (statusMap.en_cours.some(k => ls.includes(k))) return '🔵';\n  return '🟢';\n};\nconst statusLabel = {'ouvert':'🟢 Ouverts','en_cours':'🔵 En cours','clos':'✅ Clos/Termines'};\n\nlet reply = '';\n\n// --- /start ---\nif (cmd === 'start') {\n  reply = '🤖 <b>IT MG Admin Bot</b>\\n\\n'\n    + 'Bot administrateur — surveillance temps reel de tous les canaux.\\n\\n'\n    + '<b>Commandes :</b>\\n'\n    + '/tickets — Tous les tickets en cours\\n'\n    + '<i>tickets par canal</i> — Grouper par plateforme\\n'\n    + '<i>tickets par departement</i> — Grouper par societe\\n'\n    + '<i>tickets par priorite</i> — Grouper par urgence\\n'\n    + '<i>tickets par statut</i> — Grouper par statut\\n'\n    + '<i>tickets en cours</i> — Filtrer par statut\\n'\n    + '/rapport — Rapport complet tous statuts, tous canaux\\n'\n    + '/stats — Statistiques globales\\n'\n    + '/recents — Dernieres 24h\\n'\n    + '/export — Export texte structuré (copier-coller)\\n'\n    + '/help — Aide\\n\\n'\n    + '📡 Canaux surveilles : Telegram, Teams, Google Chat, Email, Jira, ClickUp, Confluence\\n'\n    + '🏢 Societes : BeautyBay, Bazarchic, Bouchara, Atlas For Men, Francois Saget, IT Support Liban\\n'\n    + '🔔 Notifications automatiques dans le groupe DEV MG.';\n  return [{ json: { reply, chatId } }];\n}\n\n// --- /help ---\nif (cmd === 'help') {\n  reply = '📋 <b>Aide IT MG Admin</b>\\n\\n'\n    + '<b>Affichage :</b>\\n'\n    + '• <code>tickets</code> — en cours, par categorie\\n'\n    + '• <code>tickets par canal</code> — par plateforme (Telegram, Jira, email...)\\n'\n    + '• <code>tickets par departement</code> — par societe\\n'\n    + '• <code>tickets par priorite</code> — par urgence\\n'\n    + '• <code>tickets par statut</code> — par etat (ouvert, en cours, clos)\\n\\n'\n    + '<b>Filtres par statut :</b>\\n'\n    + '• <code>tickets ouverts</code> — uniquement ouverts\\n'\n    + '• <code>tickets en cours</code> — uniquement en traitement\\n'\n    + '• <code>tickets clos</code> — uniquement termines\\n\\n'\n    + '<b>Filtres par canal :</b>\\n'\n    + '• <code>tickets outlook</code> / <code>tickets email</code>\\n'\n    + '• <code>tickets telegram</code> / <code>tickets teams</code>\\n'\n    + '• <code>tickets jira</code> / <code>tickets google chat</code>\\n\\n'\n    + '<b>Filtres par societe :</b>\\n'\n    + '• <code>tickets beautybay</code> / <code>tickets bazarchic</code>\\n'\n    + '• <code>tickets bouchara</code> / <code>tickets liban</code>\\n'\n    + '• <code>tickets atlas</code> / <code>tickets francois saget</code>\\n\\n'\n    + '<b>Export :</b>\\n'\n    + '• <code>export</code> — texte structuré, copiable\\n'\n    + '• <code>export ouverts beautybay</code> — exporter avec filtres\\n\\n'\n    + '<b>Combinaisons :</b>\\n'\n    + '• <code>tickets outlook beautybay</code> — canal + societe\\n'\n    + '• <code>tickets en cours par canal</code> — statut + groupement\\n'\n    + '• <code>tickets outlook en cours</code> — canal + statut\\n\\n'\n    + '<b>Rapports :</b>\\n'\n    + '• <code>rapport</code> — tous statuts, tous canaux\\n'\n    + '• <code>rapport ouverts</code> / <code>rapport clos</code>\\n'\n    + '• <code>stats</code> — comptages globaux\\n'\n    + '• <code>recents</code> — dernieres 24h';\n  return [{ json: { reply, chatId } }];\n}\n\n// --- Filtrage commun : statusFilter, channelFilter, tenantFilter s'appliquent partout ---\nlet pool = allTickets;\n\n// Filtre canal\nif (channelFilter) pool = pool.filter(t => matchChannel(t.platform, channelFilter));\n// Filtre tenant\nif (tenantFilter) pool = pool.filter(t => matchTenant(t.tenant_name, tenantFilter));\n// Filtre statut ou defaut selon commande\nif (statusFilter) {\n  pool = pool.filter(t => matchStatus(t.status, statusFilter));\n} else if (cmd === 'tickets') {\n  pool = pool.filter(t => isOpen(t.status));\n} else if (cmd === 'recents') {\n  const cutoff = new Date(Date.now() - 24*3600*1000).toISOString();\n  pool = pool.filter(t => (t.cree_le_iso || '') > cutoff);\n}\n\n// Description des filtres actifs pour les messages vides\nconst activeFilters = [];\nif (channelFilter) activeFilters.push('canal \"' + esc(channelFilter) + '\"');\nif (tenantFilter) activeFilters.push('societe \"' + esc(tenantFilter) + '\"');\nif (statusFilter) activeFilters.push('statut \"' + esc(statusFilter) + '\"');\nconst filterDesc = activeFilters.length ? ' (filtres : ' + activeFilters.join(', ') + ')' : '';\n\nif (pool.length === 0) {\n  if (activeFilters.length) reply = '📭 Aucun ticket trouve' + filterDesc + '.\\n\\n'\n    + '💡 <i>Verifiez que des tickets existent pour ce canal/cette societe dans la base.</i>';\n  else if (cmd === 'recents') reply = '✅ Aucune nouvelle demande dans les dernieres 24h.';\n  else reply = '✅ Aucun ticket en cours. Tout est resolu !';\n  return [{ json: { reply, chatId } }];\n}\n\n// --- /export : fichier CSV envoye en document Telegram ---\nif (cmd === 'export') {\n  const label = statusFilter ? statusLabel[statusFilter]||statusFilter : 'tous';\n  const sep = ';';\n  const headers = ['REF','STATUT','PRIORITE','CANAL','SOCIETE','CATEGORIE','DEMANDEUR','TITRE','DATE'];\n  let csv = '﻿' + headers.join(sep) + '\\n';\n  for (const t of pool) {\n    const row = [\n      t.ref||(t.id||'').slice(0,8),\n      t.status||'',\n      t.priority||'',\n      t.platform||'',\n      t.tenant_name||'',\n      t.category||'',\n      (t.requester_raw||'').replace(/[;\"]/g,' '),\n      '\"' + (t.title||'').replace(/\"/g,\"'\").slice(0,120) + '\"',\n      t.cree_le||''\n    ];\n    csv += row.join(sep) + '\\n';\n  }\n  reply = '📤 <b>Export tickets</b> (' + pool.length + ' — ' + esc(label) + ')\\n'\n    + '📎 Fichier CSV en piece jointe.';\n  return [{ json: { reply, chatId, csv_data: csv, csv_filename: 'tickets_export.csv' } }];\n}\n\n// --- /stats ---\nif (cmd === 'stats') {\n  const byCat = {}, byPrio = {}, byPlat = {}, byLevel = {}, byStat = {};\n  for (const t of pool) {\n    byCat[t.category||'autre'] = (byCat[t.category||'autre']||0) + 1;\n    byPrio[t.priority||'p4'] = (byPrio[t.priority||'p4']||0) + 1;\n    byPlat[t.platform||'inconnu'] = (byPlat[t.platform||'inconnu']||0) + 1;\n    byLevel[t.autonomy_level||'N0'] = (byLevel[t.autonomy_level||'N0']||0) + 1;\n    byStat[t.status||'inconnu'] = (byStat[t.status||'inconnu']||0) + 1;\n  }\n  const label = statusFilter ? statusLabel[statusFilter]||statusFilter : 'en cours';\n  reply = '📊 <b>Statistiques</b> (' + pool.length + ' tickets ' + esc(label) + ')\\n\\n';\n  reply += '<b>Par statut :</b>\\n';\n  for (const [s,n] of Object.entries(byStat).sort((a,b)=>b[1]-a[1]))\n    reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\\n';\n  reply += '\\n<b>Par categorie :</b>\\n';\n  for (const [k,v] of Object.entries(byCat).sort((a,b)=>b[1]-a[1]))\n    reply += '  • ' + esc(k) + ' : ' + v + '\\n';\n  reply += '\\n<b>Par canal :</b>\\n';\n  for (const [k,v] of Object.entries(byPlat).sort((a,b)=>b[1]-a[1]))\n    reply += '  📡 ' + esc(k) + ' : ' + v + '\\n';\n  reply += '\\n<b>Par priorite :</b>\\n';\n  for (const k of ['p1','p2','p3','p4'])\n    if (byPrio[k]) reply += '  ' + (prioIcon[k]||'') + ' ' + k.toUpperCase() + ' : ' + byPrio[k] + '\\n';\n  reply += '\\n<b>Par niveau :</b>\\n';\n  for (const k of ['N0','N1','N2','N3'])\n    if (byLevel[k]) reply += '  • ' + k + ' : ' + byLevel[k] + '\\n';\n  return [{ json: { reply, chatId } }];\n}\n\n// --- /rapport : vue complete par statut puis par canal ---\nif (cmd === 'rapport') {\n  const title = statusFilter\n    ? '📊 <b>Rapport — ' + esc(statusLabel[statusFilter]||statusFilter) + '</b>'\n    : '📊 <b>Rapport complet — tous statuts, tous canaux</b>';\n  reply = title + ' (' + pool.length + ' tickets)\\n\\n';\n\n  if (!statusFilter) {\n    const byStat = {};\n    for (const t of pool) { const s = t.status||'inconnu'; byStat[s]=(byStat[s]||0)+1; }\n    reply += '<b>Repartition par statut :</b>\\n';\n    for (const [s,n] of Object.entries(byStat).sort((a,b)=>b[1]-a[1]))\n      reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\\n';\n    reply += '\\n';\n  }\n\n  const byPlat = {};\n  for (const t of pool) { const p=t.platform||'inconnu'; if(!byPlat[p]) byPlat[p]=[]; byPlat[p].push(t); }\n  reply += '<b>Par canal :</b>\\n';\n  for (const [plat,items] of Object.entries(byPlat).sort((a,b)=>b[1].length-a[1].length)) {\n    reply += '\\n📡 <b>' + esc(plat.toUpperCase()) + '</b> (' + items.length + ')\\n';\n    for (const t of items.slice(0,5)) {\n      const p = prioIcon[t.priority]||'⚪';\n      reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref||(t.id||'').slice(0,8)) + '</b> — '\n        + esc((t.title||'').slice(0,45)) + '\\n    '\n        + esc(t.status||'') + ' | ' + esc(t.category||'')\n        + (t.tenant_name && t.tenant_name!=='non attribue' ? ' | '+esc(t.tenant_name) : '')\n        + ' | ' + esc(t.cree_le||'') + '\\n';\n    }\n    if (items.length>5) reply += '  <i>... et '+(items.length-5)+' autres</i>\\n';\n  }\n\n  const byCat = {};\n  for (const t of pool) { const c=t.category||'autre'; byCat[c]=(byCat[c]||0)+1; }\n  reply += '\\n<b>Par categorie :</b>\\n';\n  for (const [c,n] of Object.entries(byCat).sort((a,b)=>b[1]-a[1]))\n    reply += '  • ' + esc(c) + ' : ' + n + '\\n';\n\n  return [{ json: { reply, chatId } }];\n}\n\n// --- /tickets et /recents : groupement configurable ---\n// Fonction de groupement par cle\nfunction groupKey(t) {\n  if (groupBy === 'canal') return t.platform || 'inconnu';\n  if (groupBy === 'tenant') return t.tenant_name || 'non attribue';\n  if (groupBy === 'priorite') return t.priority || 'p4';\n  if (groupBy === 'statut') return t.status || 'inconnu';\n  return t.category || 'autre';\n}\n\nconst groups = {};\nfor (const t of pool) {\n  const k = groupKey(t);\n  if (!groups[k]) groups[k] = [];\n  groups[k].push(t);\n}\n\nconst groupIcon = {\n  'canal': '📡', 'tenant': '🏢', 'priorite': '🎯',\n  'statut': '📋', 'categorie': '📁'\n};\nconst icon = groupIcon[groupBy] || '📁';\n\nlet label = cmd === 'recents' ? 'Demandes recentes (24h)' : 'Tickets';\nif (statusFilter) label += ' ' + (statusLabel[statusFilter]||statusFilter).replace(/[^ ]+\\s*/, '');\nelse if (cmd === 'tickets') label += ' en cours';\nif (channelFilter) label += ' [' + esc(channelFilter) + ']';\nif (tenantFilter) label += ' [' + esc(tenantFilter) + ']';\nreply = '📋 <b>' + label + '</b> (' + pool.length + ') — par ' + esc(groupBy) + '\\n\\n';\n\nconst sortedGroups = Object.entries(groups).sort((a,b) => {\n  if (groupBy === 'priorite') return a[0].localeCompare(b[0]);\n  return b[1].length - a[1].length;\n});\n\nfor (const [group, items] of sortedGroups) {\n  const gIcon = groupBy === 'priorite' ? (prioIcon[group]||'⚪')\n    : groupBy === 'statut' ? statusIcon(group) : icon;\n  reply += gIcon + ' <b>' + esc(group.toUpperCase()) + '</b> (' + items.length + ')\\n';\n  for (const t of items.slice(0, 6)) {\n    const p = prioIcon[t.priority] || '⚪';\n    reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '\n      + esc((t.title||'').slice(0,50)) + '\\n    '\n      + esc(t.autonomy_level||'') + ' | ' + esc(t.status||'')\n      + (groupBy !== 'tenant' && t.tenant_name && t.tenant_name !== 'non attribue' ? ' | ' + esc(t.tenant_name) : '')\n      + (groupBy !== 'canal' && t.platform ? ' | ' + esc(t.platform) : '')\n      + (groupBy !== 'categorie' ? ' | ' + esc(t.category||'') : '')\n      + ' | ' + esc(t.cree_le||'') + '\\n';\n  }\n  if (items.length > 6) reply += '  <i>... et ' + (items.length - 6) + ' autres</i>\\n';\n  reply += '\\n';\n}\n\nreturn [{ json: { reply, chatId } }];"
+        "jsCode": "// Formate la reponse admin — groupement par categorie/canal/priorite/tenant/statut.\n// chatId est transmis dans la sortie pour le noeud HTTP qui suit.\nconst cmdData = $('Parser admin').first().json;\nconst cmd = cmdData.cmd;\nconst groupBy = cmdData.groupBy;\nconst chatId = cmdData.chatId;\nconst isWeb = !!cmdData.isWeb;\nconst statusFilter = cmdData.statusFilter || '';\nconst channelFilter = cmdData.channelFilter || '';\nconst tenantFilter = cmdData.tenantFilter || '';\nconst allTickets = $input.all().map(i => i.json).filter(t => t.id);\n\nfunction esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\nconst prioIcon = {'p1':'🔴','p2':'🟠','p3':'🟡','p4':'🟢'};\nconst statusMap = {\n  'ouvert': ['ouvert','open','nouveau','new'],\n  'en_cours': ['en_cours','in_progress','en cours','attente','pending','escalade'],\n  'clos': ['clos','closed','resolu','resolved','termine','done','annule','cancelled']\n};\nfunction matchStatus(s, filter) {\n  if (!filter) return true;\n  const ls = String(s||'').toLowerCase();\n  return (statusMap[filter]||[]).some(k => ls.includes(k) || ls === k);\n}\nfunction isOpen(s) { return !matchStatus(s, 'clos'); }\n\nconst channelMap = {\n  'email': ['email','outlook','mail','imap','smtp'],\n  'telegram': ['telegram'],\n  'teams': ['teams','microsoft teams'],\n  'google_chat': ['google_chat','google chat','gchat','hangouts'],\n  'jira': ['jira','jsm','jira service'],\n  'clickup': ['clickup','click up'],\n  'confluence': ['confluence','wiki']\n};\nfunction matchChannel(platform, filter) {\n  if (!filter) return true;\n  const lp = String(platform||'').toLowerCase();\n  return (channelMap[filter]||[]).some(k => lp.includes(k) || lp === k);\n}\n\nconst tenantMap = {\n  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],\n  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],\n  'bouchara': ['bouchara'],\n  'liban': ['liban','it support liban','itsupportliban'],\n  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],\n  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],\n  'devmg': ['dev mg','devmg','dev-mg']\n};\nfunction matchTenant(name, filter) {\n  if (!filter) return true;\n  const ln = String(name||'').toLowerCase();\n  return (tenantMap[filter]||[]).some(k => ln.includes(k) || ln === k);\n}\nconst statusIcon = s => {\n  const ls = String(s||'').toLowerCase();\n  if (statusMap.clos.some(k => ls.includes(k))) return '✅';\n  if (statusMap.en_cours.some(k => ls.includes(k))) return '🔵';\n  return '🟢';\n};\nconst statusLabel = {'ouvert':'🟢 Ouverts','en_cours':'🔵 En cours','clos':'✅ Clos/Termines'};\n\nlet reply = '';\n\n// --- /start ---\nif (cmd === 'start') {\n  reply = '🤖 <b>IT MG Admin Bot</b>\\n\\n'\n    + 'Bot administrateur — surveillance temps reel de tous les canaux.\\n\\n'\n    + '<b>Commandes :</b>\\n'\n    + '/tickets — Tous les tickets en cours\\n'\n    + '<i>tickets par canal</i> — Grouper par plateforme\\n'\n    + '<i>tickets par departement</i> — Grouper par societe\\n'\n    + '<i>tickets par priorite</i> — Grouper par urgence\\n'\n    + '<i>tickets par statut</i> — Grouper par statut\\n'\n    + '<i>tickets en cours</i> — Filtrer par statut\\n'\n    + '/rapport — Rapport complet tous statuts, tous canaux\\n'\n    + '/stats — Statistiques globales\\n'\n    + '/recents — Dernieres 24h\\n'\n    + '/export — Export texte structuré (copier-coller)\\n'\n    + '/help — Aide\\n\\n'\n    + '📡 Canaux surveilles : Telegram, Teams, Google Chat, Email, Jira, ClickUp, Confluence\\n'\n    + '🏢 Societes : BeautyBay, Bazarchic, Bouchara, Atlas For Men, Francois Saget, IT Support Liban\\n'\n    + '🔔 Notifications automatiques dans le groupe DEV MG.';\n  return [{ json: { reply, chatId, isWeb } }];\n}\n\n// --- /help ---\nif (cmd === 'help') {\n  reply = '📋 <b>Aide IT MG Admin</b>\\n\\n'\n    + '<b>Affichage :</b>\\n'\n    + '• <code>tickets</code> — en cours, par categorie\\n'\n    + '• <code>tickets par canal</code> — par plateforme (Telegram, Jira, email...)\\n'\n    + '• <code>tickets par departement</code> — par societe\\n'\n    + '• <code>tickets par priorite</code> — par urgence\\n'\n    + '• <code>tickets par statut</code> — par etat (ouvert, en cours, clos)\\n\\n'\n    + '<b>Filtres par statut :</b>\\n'\n    + '• <code>tickets ouverts</code> — uniquement ouverts\\n'\n    + '• <code>tickets en cours</code> — uniquement en traitement\\n'\n    + '• <code>tickets clos</code> — uniquement termines\\n\\n'\n    + '<b>Filtres par canal :</b>\\n'\n    + '• <code>tickets outlook</code> / <code>tickets email</code>\\n'\n    + '• <code>tickets telegram</code> / <code>tickets teams</code>\\n'\n    + '• <code>tickets jira</code> / <code>tickets google chat</code>\\n\\n'\n    + '<b>Filtres par societe :</b>\\n'\n    + '• <code>tickets beautybay</code> / <code>tickets bazarchic</code>\\n'\n    + '• <code>tickets bouchara</code> / <code>tickets liban</code>\\n'\n    + '• <code>tickets atlas</code> / <code>tickets francois saget</code>\\n\\n'\n    + '<b>Export :</b>\\n'\n    + '• <code>export</code> — texte structuré, copiable\\n'\n    + '• <code>export ouverts beautybay</code> — exporter avec filtres\\n\\n'\n    + '<b>Combinaisons :</b>\\n'\n    + '• <code>tickets outlook beautybay</code> — canal + societe\\n'\n    + '• <code>tickets en cours par canal</code> — statut + groupement\\n'\n    + '• <code>tickets outlook en cours</code> — canal + statut\\n\\n'\n    + '<b>Rapports :</b>\\n'\n    + '• <code>rapport</code> — tous statuts, tous canaux\\n'\n    + '• <code>rapport ouverts</code> / <code>rapport clos</code>\\n'\n    + '• <code>stats</code> — comptages globaux\\n'\n    + '• <code>recents</code> — dernieres 24h';\n  return [{ json: { reply, chatId, isWeb } }];\n}\n\n// --- Filtrage commun : statusFilter, channelFilter, tenantFilter s'appliquent partout ---\nlet pool = allTickets;\n\n// Filtre canal\nif (channelFilter) pool = pool.filter(t => matchChannel(t.platform, channelFilter));\n// Filtre tenant\nif (tenantFilter) pool = pool.filter(t => matchTenant(t.tenant_name, tenantFilter));\n// Filtre statut ou defaut selon commande\nif (statusFilter) {\n  pool = pool.filter(t => matchStatus(t.status, statusFilter));\n} else if (cmd === 'tickets') {\n  pool = pool.filter(t => isOpen(t.status));\n} else if (cmd === 'recents') {\n  const cutoff = new Date(Date.now() - 24*3600*1000).toISOString();\n  pool = pool.filter(t => (t.cree_le_iso || '') > cutoff);\n}\n\n// Description des filtres actifs pour les messages vides\nconst activeFilters = [];\nif (channelFilter) activeFilters.push('canal \"' + esc(channelFilter) + '\"');\nif (tenantFilter) activeFilters.push('societe \"' + esc(tenantFilter) + '\"');\nif (statusFilter) activeFilters.push('statut \"' + esc(statusFilter) + '\"');\nconst filterDesc = activeFilters.length ? ' (filtres : ' + activeFilters.join(', ') + ')' : '';\n\nif (pool.length === 0) {\n  if (activeFilters.length) reply = '📭 Aucun ticket trouve' + filterDesc + '.\\n\\n'\n    + '💡 <i>Verifiez que des tickets existent pour ce canal/cette societe dans la base.</i>';\n  else if (cmd === 'recents') reply = '✅ Aucune nouvelle demande dans les dernieres 24h.';\n  else reply = '✅ Aucun ticket en cours. Tout est resolu !';\n  return [{ json: { reply, chatId, isWeb } }];\n}\n\n// --- /export : fichier CSV envoye en document Telegram ---\nif (cmd === 'export') {\n  const label = statusFilter ? statusLabel[statusFilter]||statusFilter : 'tous';\n  const sep = ';';\n  const headers = ['REF','STATUT','PRIORITE','CANAL','SOCIETE','CATEGORIE','DEMANDEUR','TITRE','DATE'];\n  let csv = '﻿' + headers.join(sep) + '\\n';\n  for (const t of pool) {\n    const row = [\n      t.ref||(t.id||'').slice(0,8),\n      t.status||'',\n      t.priority||'',\n      t.platform||'',\n      t.tenant_name||'',\n      t.category||'',\n      (t.requester_raw||'').replace(/[;\"]/g,' '),\n      '\"' + (t.title||'').replace(/\"/g,\"'\").slice(0,120) + '\"',\n      t.cree_le||''\n    ];\n    csv += row.join(sep) + '\\n';\n  }\n  reply = '📤 <b>Export tickets</b> (' + pool.length + ' — ' + esc(label) + ')\\n'\n    + '📎 Fichier CSV en piece jointe.';\n  return [{ json: { reply, chatId, isWeb, csv_data: csv, csv_filename: 'tickets_export.csv' } }];\n}\n\n// --- /stats ---\nif (cmd === 'stats') {\n  const byCat = {}, byPrio = {}, byPlat = {}, byLevel = {}, byStat = {};\n  for (const t of pool) {\n    byCat[t.category||'autre'] = (byCat[t.category||'autre']||0) + 1;\n    byPrio[t.priority||'p4'] = (byPrio[t.priority||'p4']||0) + 1;\n    byPlat[t.platform||'inconnu'] = (byPlat[t.platform||'inconnu']||0) + 1;\n    byLevel[t.autonomy_level||'N0'] = (byLevel[t.autonomy_level||'N0']||0) + 1;\n    byStat[t.status||'inconnu'] = (byStat[t.status||'inconnu']||0) + 1;\n  }\n  const label = statusFilter ? statusLabel[statusFilter]||statusFilter : 'en cours';\n  reply = '📊 <b>Statistiques</b> (' + pool.length + ' tickets ' + esc(label) + ')\\n\\n';\n  reply += '<b>Par statut :</b>\\n';\n  for (const [s,n] of Object.entries(byStat).sort((a,b)=>b[1]-a[1]))\n    reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\\n';\n  reply += '\\n<b>Par categorie :</b>\\n';\n  for (const [k,v] of Object.entries(byCat).sort((a,b)=>b[1]-a[1]))\n    reply += '  • ' + esc(k) + ' : ' + v + '\\n';\n  reply += '\\n<b>Par canal :</b>\\n';\n  for (const [k,v] of Object.entries(byPlat).sort((a,b)=>b[1]-a[1]))\n    reply += '  📡 ' + esc(k) + ' : ' + v + '\\n';\n  reply += '\\n<b>Par priorite :</b>\\n';\n  for (const k of ['p1','p2','p3','p4'])\n    if (byPrio[k]) reply += '  ' + (prioIcon[k]||'') + ' ' + k.toUpperCase() + ' : ' + byPrio[k] + '\\n';\n  reply += '\\n<b>Par niveau :</b>\\n';\n  for (const k of ['N0','N1','N2','N3'])\n    if (byLevel[k]) reply += '  • ' + k + ' : ' + byLevel[k] + '\\n';\n  return [{ json: { reply, chatId, isWeb } }];\n}\n\n// --- /rapport : vue complete par statut puis par canal ---\nif (cmd === 'rapport') {\n  const title = statusFilter\n    ? '📊 <b>Rapport — ' + esc(statusLabel[statusFilter]||statusFilter) + '</b>'\n    : '📊 <b>Rapport complet — tous statuts, tous canaux</b>';\n  reply = title + ' (' + pool.length + ' tickets)\\n\\n';\n\n  if (!statusFilter) {\n    const byStat = {};\n    for (const t of pool) { const s = t.status||'inconnu'; byStat[s]=(byStat[s]||0)+1; }\n    reply += '<b>Repartition par statut :</b>\\n';\n    for (const [s,n] of Object.entries(byStat).sort((a,b)=>b[1]-a[1]))\n      reply += '  ' + statusIcon(s) + ' ' + esc(s) + ' : ' + n + '\\n';\n    reply += '\\n';\n  }\n\n  const byPlat = {};\n  for (const t of pool) { const p=t.platform||'inconnu'; if(!byPlat[p]) byPlat[p]=[]; byPlat[p].push(t); }\n  reply += '<b>Par canal :</b>\\n';\n  for (const [plat,items] of Object.entries(byPlat).sort((a,b)=>b[1].length-a[1].length)) {\n    reply += '\\n📡 <b>' + esc(plat.toUpperCase()) + '</b> (' + items.length + ')\\n';\n    for (const t of items.slice(0,5)) {\n      const p = prioIcon[t.priority]||'⚪';\n      reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref||(t.id||'').slice(0,8)) + '</b> — '\n        + esc((t.title||'').slice(0,45)) + '\\n    '\n        + esc(t.status||'') + ' | ' + esc(t.category||'')\n        + (t.tenant_name && t.tenant_name!=='non attribue' ? ' | '+esc(t.tenant_name) : '')\n        + ' | ' + esc(t.cree_le||'') + '\\n';\n    }\n    if (items.length>5) reply += '  <i>... et '+(items.length-5)+' autres</i>\\n';\n  }\n\n  const byCat = {};\n  for (const t of pool) { const c=t.category||'autre'; byCat[c]=(byCat[c]||0)+1; }\n  reply += '\\n<b>Par categorie :</b>\\n';\n  for (const [c,n] of Object.entries(byCat).sort((a,b)=>b[1]-a[1]))\n    reply += '  • ' + esc(c) + ' : ' + n + '\\n';\n\n  return [{ json: { reply, chatId, isWeb } }];\n}\n\n// --- /tickets et /recents : groupement configurable ---\n// Fonction de groupement par cle\nfunction groupKey(t) {\n  if (groupBy === 'canal') return t.platform || 'inconnu';\n  if (groupBy === 'tenant') return t.tenant_name || 'non attribue';\n  if (groupBy === 'priorite') return t.priority || 'p4';\n  if (groupBy === 'statut') return t.status || 'inconnu';\n  return t.category || 'autre';\n}\n\nconst groups = {};\nfor (const t of pool) {\n  const k = groupKey(t);\n  if (!groups[k]) groups[k] = [];\n  groups[k].push(t);\n}\n\nconst groupIcon = {\n  'canal': '📡', 'tenant': '🏢', 'priorite': '🎯',\n  'statut': '📋', 'categorie': '📁'\n};\nconst icon = groupIcon[groupBy] || '📁';\n\nlet label = cmd === 'recents' ? 'Demandes recentes (24h)' : 'Tickets';\nif (statusFilter) label += ' ' + (statusLabel[statusFilter]||statusFilter).replace(/[^ ]+\\s*/, '');\nelse if (cmd === 'tickets') label += ' en cours';\nif (channelFilter) label += ' [' + esc(channelFilter) + ']';\nif (tenantFilter) label += ' [' + esc(tenantFilter) + ']';\nreply = '📋 <b>' + label + '</b> (' + pool.length + ') — par ' + esc(groupBy) + '\\n\\n';\n\nconst sortedGroups = Object.entries(groups).sort((a,b) => {\n  if (groupBy === 'priorite') return a[0].localeCompare(b[0]);\n  return b[1].length - a[1].length;\n});\n\nfor (const [group, items] of sortedGroups) {\n  const gIcon = groupBy === 'priorite' ? (prioIcon[group]||'⚪')\n    : groupBy === 'statut' ? statusIcon(group) : icon;\n  reply += gIcon + ' <b>' + esc(group.toUpperCase()) + '</b> (' + items.length + ')\\n';\n  for (const t of items.slice(0, 6)) {\n    const p = prioIcon[t.priority] || '⚪';\n    reply += '  ' + statusIcon(t.status) + p + ' <b>' + esc(t.ref || (t.id||'').slice(0,8)) + '</b> — '\n      + esc((t.title||'').slice(0,50)) + '\\n    '\n      + esc(t.autonomy_level||'') + ' | ' + esc(t.status||'')\n      + (groupBy !== 'tenant' && t.tenant_name && t.tenant_name !== 'non attribue' ? ' | ' + esc(t.tenant_name) : '')\n      + (groupBy !== 'canal' && t.platform ? ' | ' + esc(t.platform) : '')\n      + (groupBy !== 'categorie' ? ' | ' + esc(t.category||'') : '')\n      + ' | ' + esc(t.cree_le||'') + '\\n';\n  }\n  if (items.length > 6) reply += '  <i>... et ' + (items.length - 6) + ' autres</i>\\n';\n  reply += '\\n';\n}\n\nreturn [{ json: { reply, chatId, isWeb } }];"
       }
     },
     {
@@ -1558,6 +1650,59 @@
       "onError": "continueRegularOutput"
     },
     {
+      "name": "Admin: web ou Telegram ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1000,
+        1120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "isWeb",
+              "leftValue": "={{ $json.isWeb }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Admin: repondre JSON",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        1180
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply_text: $json.reply, csv_data: $json.csv_data || null, csv_filename: $json.csv_filename || null }) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "Envoyer CSV Telegram",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1566,7 +1711,7 @@
         940
       ],
       "parameters": {
-        "jsCode": "// Envoie le CSV directement a l'API Telegram sendDocument\nconst chatId = $json.chatId;\nconst caption = $json.reply || '';\nconst csvData = $json.csv_data || '';\nconst filename = $json.csv_filename || 'tickets_export.csv';\n\n// Construire le FormData manuellement\nconst boundary = '----n8nCSVBoundary' + Date.now();\nconst nl = '\\r\\n';\nlet body = '';\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"chat_id\"' + nl + nl + chatId + nl;\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"caption\"' + nl + nl + caption + nl;\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"parse_mode\"' + nl + nl + 'HTML' + nl;\nbody += '--' + boundary + nl;\nbody += 'Content-Disposition: form-data; name=\"document\"; filename=\"' + filename + '\"' + nl;\nbody += 'Content-Type: text/csv' + nl + nl;\nbody += csvData + nl;\nbody += '--' + boundary + '--' + nl;\n\nconst token = $vars.TELEGRAM_ADMIN_BOT_TOKEN;\nconst resp = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://api.telegram.org/bot' + token + '/sendDocument',\n  headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },\n  body: body,\n  returnFullResponse: true,\n});\nreturn [{ json: { ok: true, chatId, sent: resp.statusCode || 200 } }];"
+        "jsCode": "const chatId = String($json.chatId);\nconst caption = ($json.reply || '').slice(0, 1024);\nconst csvData = $json.csv_data || '';\nconst filename = $json.csv_filename || 'tickets_export.csv';\nconst token = $vars.TELEGRAM_ADMIN_BOT_TOKEN;\nconst apiUrl = 'https://api.telegram.org/bot' + token;\n\nconst sendMsg = async (text) => {\n  await this.helpers.httpRequest({\n    method: 'POST', url: apiUrl + '/sendMessage',\n    headers: {'Content-Type':'application/json'},\n    body: JSON.stringify({chat_id:chatId, text:text.slice(0,4000), parse_mode:'HTML'})\n  });\n};\n\ntry {\n  const resp = await this.helpers.request({\n    method: 'POST',\n    uri: apiUrl + '/sendDocument',\n    formData: {\n      chat_id: chatId,\n      caption: caption,\n      parse_mode: 'HTML',\n      document: {\n        value: Buffer.from('﻿' + csvData, 'utf-8'),\n        options: { filename: filename, contentType: 'text/csv' }\n      }\n    }\n  });\n  const r = typeof resp === 'string' ? JSON.parse(resp) : resp;\n  return [{ json: { ok: r.ok, chatId } }];\n} catch (err1) {\n  const e1 = (err1.message || String(err1)).slice(0, 200);\n  try {\n    const boundary = '----n8n' + Date.now();\n    const NL = '\\r\\n';\n    const body = Buffer.concat([\n      Buffer.from(\n        '--'+boundary+NL+'Content-Disposition: form-data; name=\"chat_id\"'+NL+NL+chatId+NL+\n        '--'+boundary+NL+'Content-Disposition: form-data; name=\"caption\"'+NL+NL+caption+NL+\n        '--'+boundary+NL+'Content-Disposition: form-data; name=\"parse_mode\"'+NL+NL+'HTML'+NL+\n        '--'+boundary+NL+'Content-Disposition: form-data; name=\"document\"; filename=\"'+filename+'\"'+NL+\n        'Content-Type: text/csv'+NL+NL,'utf-8'),\n      Buffer.from('﻿'+csvData,'utf-8'),\n      Buffer.from(NL+'--'+boundary+'--'+NL,'utf-8')\n    ]);\n    const r2 = await this.helpers.httpRequest({\n      method:'POST', url: apiUrl+'/sendDocument',\n      headers:{'Content-Type':'multipart/form-data; boundary='+boundary},\n      body: body, encoding: null, returnFullResponse: true\n    });\n    return [{json:{ok:true, method:'buffer', status: r2.statusCode||200}}];\n  } catch (err2) {\n    const e2 = (err2.message || String(err2)).slice(0, 200);\n    await sendMsg('⚠️ Export echoue.\\nMethode 1: '+e1+'\\nMethode 2: '+e2);\n    return [{json:{ok:false, error1:e1, error2:e2}}];\n  }\n}"
       }
     }
   ],
@@ -2185,7 +2330,25 @@
         ],
         [
           {
+            "node": "Web: repondre JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Canal sans livraison directe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Web: repondre JSON": {
+      "main": [
+        [
+          {
+            "node": "PG: audit reponse",
             "type": "main",
             "index": 0
           }
@@ -2291,7 +2454,29 @@
         ]
       ]
     },
+    "Webhook Web Support": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "AdminTrigger": {
+      "main": [
+        [
+          {
+            "node": "Parser admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Web Admin": {
       "main": [
         [
           {
@@ -2326,6 +2511,24 @@
     },
     "Formater admin": {
       "main": [
+        [
+          {
+            "node": "Admin: web ou Telegram ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Admin: web ou Telegram ?": {
+      "main": [
+        [
+          {
+            "node": "Admin: repondre JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Admin: est-ce un export ?",

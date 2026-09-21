@@ -1018,7 +1018,7 @@ for (const [group, items] of sortedGroups) {
   reply += '\n';
 }
 
-return [{ json: { reply, chatId } }];
+return [{ json: { reply, chatId, isWeb } }];
 """.strip()
 
 JIRA_DEDUP_JS = r"""
