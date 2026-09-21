@@ -1211,6 +1211,82 @@ JIRA_INSTANCES = [
      "site": "beautybay.atlassian.net", "credKey": "jiraHttpBeautyBay"},
 ]
 
+# --- Confluence Polling ---
+CONFLUENCE_INSTANCES = [
+    {"label": "Confluence Bazarchic", "site": "bzcmtc.atlassian.net",
+     "credKey": "jiraHttp"},
+    {"label": "Confluence BeautyBay", "site": "beautybay.atlassian.net",
+     "credKey": "jiraHttpBeautyBay"},
+]
+
+CONFLUENCE_POLL_JS = r"""
+const data = $json;
+const results_arr = data.results || [];
+const results = [];
+for (const page of results_arr) {
+  const title = page.title || '';
+  const spaceKey = page.space ? page.space.key : '';
+  const author = page.history && page.history.createdBy
+    ? page.history.createdBy.displayName || page.history.createdBy.email || ''
+    : '';
+  const excerpt = page.excerpt || page.body && page.body.storage
+    ? (page.body.storage.value || '').replace(/<[^>]+>/g, '').substring(0, 500)
+    : '';
+  results.push({json: {
+    headers: {},
+    body: {
+      platform: 'confluence',
+      channel_id: spaceKey,
+      message_id: page.id || '',
+      user_id: author,
+      user_name: author,
+      text: title + (excerpt ? ' — ' + excerpt : ''),
+      description: excerpt
+    },
+    query: { platform: 'confluence' }
+  }});
+}
+return results.length ? results : [{ json: { _empty: true } }];
+""".strip()
+
+
+def _confluence_poll_nodes():
+    """Genere Schedule + HTTP GET + Parse pour chaque instance Confluence."""
+    result = []
+    base_y = 1060
+    for i, ci in enumerate(CONFLUENCE_INSTANCES):
+        y = base_y + i * 100
+        has_cred = ci["credKey"] in CREDS and CREDS[ci["credKey"]].get("id")
+        if not has_cred:
+            continue
+        sched_name = f"Schedule: {ci['label']}"
+        http_name = f"Poll: {ci['label']}"
+        parse_name = f"Parse: {ci['label']}"
+        result.append(node(
+            sched_name, "n8n-nodes-base.scheduleTrigger", 1.2, [-60, y],
+            {"rule": {"interval": [{"field": "minutes", "minutesInterval": 10}]}},
+        ))
+        cql = "type=page AND lastmodified >= now('-15m') ORDER BY lastmodified DESC"
+        result.append(node(
+            http_name, "n8n-nodes-base.httpRequest", 4.2, [100, y],
+            {"method": "GET",
+             "url": f"https://{ci['site']}/wiki/rest/api/content/search",
+             "authentication": "genericCredentialType",
+             "genericAuthType": "httpBasicAuth",
+             "sendQuery": True,
+             "queryParameters": {"parameters": [
+                 {"name": "cql", "value": cql},
+                 {"name": "limit", "value": "10"},
+                 {"name": "expand", "value": "space,history.createdBy"}]},
+             "options": {"response": {"response": {"responseFormat": "json"}}}},
+            creds={"httpBasicAuth": CREDS[ci["credKey"]]},
+        ))
+        result.append(node(
+            parse_name, "n8n-nodes-base.code", 2, [280, y],
+            {"jsCode": CONFLUENCE_POLL_JS},
+        ))
+    return result
+
 
 def _jira_poll_nodes():
     """Genere 2 noeuds par instance Jira : Schedule + HTTP GET search."""
@@ -1279,7 +1355,7 @@ return results.length ? results : [{ json: { _empty: true } }];
 
 def _clickup_poll_nodes():
     """Genere Schedule + HTTP GET + Parse pour ClickUp."""
-    y = 1140
+    y = 1280
     result = []
     result.append(node(
         "Schedule: ClickUp", "n8n-nodes-base.scheduleTrigger", 1.2, [-60, y],
@@ -1339,8 +1415,8 @@ NOTE = (
     "## AgentSupport - Pipeline v3 (multicanal complet)\n\n"
     "CANAUX CONNECTES EN PERMANENCE :\n"
     "  Telegram (support + admin) | Outlook OAuth2 x5 |\n"
-    "  Webhook Email (Power Automate bridge) |\n"
-    "  Jira x2 (Bazarchic + BeautyBay) | ClickUp | Webhooks (Teams, GChat)\n\n"
+    "  Webhook Email (Power Automate + Google Apps Script) |\n"
+    "  Jira x2 | Confluence x2 | ClickUp | Webhooks (Teams, GChat)\n\n"
     "BOITES EMAIL :\n"
     "  itsupport@bazarchic.com | itsupport@beautybay.com |\n"
     "  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n"
@@ -1387,6 +1463,9 @@ nodes = [
 
     # --- Jira Polling : recupere les issues recentes toutes les 5 min ---
     *_jira_poll_nodes(),
+
+    # --- Confluence Polling : recupere les pages modifiees recemment ---
+    *_confluence_poll_nodes(),
 
     # --- ClickUp Polling : recupere les taches recentes ---
     *_clickup_poll_nodes(),
@@ -1695,6 +1774,16 @@ connections = merge_conn(
         *[(f"Parse: {ji['label']}", "Normaliser (multicanal)")
            for ji in JIRA_INSTANCES
            if ji["credKey"] in CREDS and CREDS[ji["credKey"]].get("id")],
+        # --- Confluence Polling → Parse → Normalisation (uniquement si credential) ---
+        *[(f"Schedule: {ci['label']}", f"Poll: {ci['label']}")
+           for ci in CONFLUENCE_INSTANCES
+           if ci["credKey"] in CREDS and CREDS[ci["credKey"]].get("id")],
+        *[(f"Poll: {ci['label']}", f"Parse: {ci['label']}")
+           for ci in CONFLUENCE_INSTANCES
+           if ci["credKey"] in CREDS and CREDS[ci["credKey"]].get("id")],
+        *[(f"Parse: {ci['label']}", "Normaliser (multicanal)")
+           for ci in CONFLUENCE_INSTANCES
+           if ci["credKey"] in CREDS and CREDS[ci["credKey"]].get("id")],
         # --- ClickUp Polling → Parse → Normalisation ---
         ("Schedule: ClickUp", "Poll: ClickUp"),
         ("Poll: ClickUp", "Parse: ClickUp"),

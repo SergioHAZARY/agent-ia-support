@@ -10,7 +10,7 @@
         -320
       ],
       "parameters": {
-        "content": "## AgentSupport - Pipeline v3 (multicanal complet)\n\nCANAUX CONNECTES EN PERMANENCE :\n  Telegram (support + admin) | Outlook OAuth2 x5 |\n  Webhook Email (Power Automate bridge) |\n  Jira x2 (Bazarchic + BeautyBay) | ClickUp | Webhooks (Teams, GChat)\n\nBOITES EMAIL :\n  itsupport@bazarchic.com | itsupport@beautybay.com |\n  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n  support-odoo@regardbeauty.onmicrosoft.com\n\nPIPELINE : Normalise -> PG events -> societe -> contexte enrichi ->\n  AGENT CLAUDE -> GARDE-FOUS -> ticket -> N0/N1/N2/N3.\n\nLIVRAISON : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.",
+        "content": "## AgentSupport - Pipeline v3 (multicanal complet)\n\nCANAUX CONNECTES EN PERMANENCE :\n  Telegram (support + admin) | Outlook OAuth2 x5 |\n  Webhook Email (Power Automate + Google Apps Script) |\n  Jira x2 | Confluence x2 | ClickUp | Webhooks (Teams, GChat)\n\nBOITES EMAIL :\n  itsupport@bazarchic.com | itsupport@beautybay.com |\n  thaina_aa@atlasformen.com | support-it@francoisesaget.com |\n  support-odoo@regardbeauty.onmicrosoft.com\n\nPIPELINE : Normalise -> PG events -> societe -> contexte enrichi ->\n  AGENT CLAUDE -> GARDE-FOUS -> ticket -> N0/N1/N2/N3.\n\nLIVRAISON : Telegram | Email | Jira comment | ClickUp comment.\nAudit PG : final_response + ticket_events.\n\nGenere depuis git (n8n/build_pipeline.py). Ne pas editer a la main.",
         "height": 320,
         "width": 680
       }
@@ -185,12 +185,88 @@
       }
     },
     {
+      "name": "Schedule: Confluence Bazarchic",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -60,
+        1060
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Poll: Confluence Bazarchic",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        1060
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://bzcmtc.atlassian.net/wiki/rest/api/content/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "cql",
+              "value": "type=page AND lastmodified >= now('-15m') ORDER BY lastmodified DESC"
+            },
+            {
+              "name": "limit",
+              "value": "10"
+            },
+            {
+              "name": "expand",
+              "value": "space,history.createdBy"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "VRBk6zsXdR3deqJ7",
+          "name": "Jira Bazarchic (HTTP Basic)"
+        }
+      }
+    },
+    {
+      "name": "Parse: Confluence Bazarchic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1060
+      ],
+      "parameters": {
+        "jsCode": "const data = $json;\nconst results_arr = data.results || [];\nconst results = [];\nfor (const page of results_arr) {\n  const title = page.title || '';\n  const spaceKey = page.space ? page.space.key : '';\n  const author = page.history && page.history.createdBy\n    ? page.history.createdBy.displayName || page.history.createdBy.email || ''\n    : '';\n  const excerpt = page.excerpt || page.body && page.body.storage\n    ? (page.body.storage.value || '').replace(/<[^>]+>/g, '').substring(0, 500)\n    : '';\n  results.push({json: {\n    headers: {},\n    body: {\n      platform: 'confluence',\n      channel_id: spaceKey,\n      message_id: page.id || '',\n      user_id: author,\n      user_name: author,\n      text: title + (excerpt ? ' — ' + excerpt : ''),\n      description: excerpt\n    },\n    query: { platform: 'confluence' }\n  }});\n}\nreturn results.length ? results : [{ json: { _empty: true } }];"
+      }
+    },
+    {
       "name": "Schedule: ClickUp",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
         -60,
-        1140
+        1280
       ],
       "parameters": {
         "rule": {
@@ -209,7 +285,7 @@
       "typeVersion": 4.2,
       "position": [
         100,
-        1140
+        1280
       ],
       "parameters": {
         "method": "GET",
@@ -259,7 +335,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        1140
+        1280
       ],
       "parameters": {
         "jsCode": "// Parse les taches ClickUp recentes en format normalise.\nconst data = $json;\nconst tasks = data.tasks || [];\nconst results = [];\nfor (const t of tasks) {\n  const assignees = (t.assignees || []).map(a => a.username || a.email || '').join(', ');\n  results.push({json: {\n    headers: {},\n    body: {\n      platform: 'clickup',\n      channel_id: t.list ? t.list.id : '',\n      message_id: t.id,\n      user_id: (t.creator || {}).id || '',\n      user_name: (t.creator || {}).username || '',\n      text: (t.name || '') + (t.description ? ' — ' + t.description : ''),\n      description: t.description || '',\n      list_id: t.list ? t.list.id : ''\n    },\n    query: { platform: 'clickup' }\n  }});\n}\nreturn results.length ? results : [{ json: { _empty: true } }];"
@@ -1559,6 +1635,39 @@
       ]
     },
     "Parse: Jira Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Normaliser (multicanal)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule: Confluence Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Poll: Confluence Bazarchic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll: Confluence Bazarchic": {
+      "main": [
+        [
+          {
+            "node": "Parse: Confluence Bazarchic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse: Confluence Bazarchic": {
       "main": [
         [
           {
