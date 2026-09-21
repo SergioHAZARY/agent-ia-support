@@ -246,7 +246,8 @@ let baseEvent;
 try { baseEvent = $('Fusionner texte image').item.json; } catch(e) { baseEvent = null; }
 if (!baseEvent) baseEvent = $('Normaliser (multicanal)').item.json;
 const src = Object.assign({}, baseEvent,
-  { tenant_id: (pg && pg.tenant_id) || null });
+  { tenant_id: (pg && pg.tenant_id) || null,
+    channel_id: (pg && pg.channel_id) || null });
 
 // Formater les sections de contexte
 const histText = hist.length
@@ -696,11 +697,11 @@ else if (/\b(confluence|wiki)\b/i.test(text)) channelFilter = 'confluence';
 let tenantFilter = '';
 const tenantAliases = {
   'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],
-  'bazarchic': ['bazarchic','bazar chic','bazar-chic'],
+  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],
   'bouchara': ['bouchara'],
   'liban': ['liban','it support liban','itsupportliban'],
   'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],
-  'francoissaget': ['francois saget','françois saget','francoissaget','fsaget'],
+  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],
   'devmg': ['dev mg','devmg','dev-mg']
 };
 for (const [key, aliases] of Object.entries(tenantAliases)) {
@@ -753,11 +754,11 @@ function matchChannel(platform, filter) {
 
 const tenantMap = {
   'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],
-  'bazarchic': ['bazarchic','bazar chic','bazar-chic'],
+  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],
   'bouchara': ['bouchara'],
   'liban': ['liban','it support liban','itsupportliban'],
   'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],
-  'francoissaget': ['francois saget','françois saget','francoissaget','fsaget'],
+  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],
   'devmg': ['dev mg','devmg','dev-mg']
 };
 function matchTenant(name, filter) {
@@ -1052,16 +1053,16 @@ PG_EVENT_SQL = (
 # Resout la societe SI le canal est actif ; sinon renvoie une ligne a null
 # (grace au select-from-dummy en LEFT JOIN) => le flux ne s'interrompt jamais.
 PG_CTX_SQL = (
-    "select c.tenant_id, t.max_autonomy, t.observation_only "
+    "select c.id as channel_id, c.tenant_id, t.max_autonomy, t.observation_only "
     "from (select $1::text as platform, $2::text as external_id) q "
     "left join channels c on c.platform = q.platform and c.external_id = q.external_id "
     "and c.status = 'active' "
     "left join tenants t on t.id = c.tenant_id;")
 
 PG_TICKET_SQL = (
-    "insert into tickets (tenant_id, title, summary, category, subcategory, "
+    "insert into tickets (tenant_id, channel_id, title, summary, category, subcategory, "
     "priority, autonomy_level, confidence, status, ai_response, escalation_reason) "
-    "values ($1,$2,$3,$4,$5,$6,$7,$8,'nouveau',$9,$10) returning id, ref;")
+    "values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'nouveau',$10,$11) returning id, ref;")
 
 PG_REPORT_SQL = "select * from v_tickets_ouverts limit 100;"
 
@@ -1611,7 +1612,8 @@ nodes = [
     node("Preparer reponse (non-ticket)", "n8n-nodes-base.code", 2, [2120, 40],
          {"jsCode": PREPARE_REPLY_NONTICKET_JS}),
     pg_node("PG: creer le ticket", [1800, 300], PG_TICKET_SQL,
-            "={{ [$json._source.tenant_id || null, $json.title, $json.summary, "
+            "={{ [$json._source.tenant_id || null, $json._source.channel_id || null, "
+            "$json.title, $json.summary, "
             "$json.category, $json.subcategory, $json.priority, "
             "$json.autonomy_level, $json.confidence, "
             "$json.proposed_response || '', $json.escalation_reason || ''] }}"),

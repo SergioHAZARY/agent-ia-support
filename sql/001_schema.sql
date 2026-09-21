@@ -83,7 +83,7 @@ create table if not exists channels (
   created_at       timestamptz not null default now(),
   unique (platform, external_id),
   constraint channels_platform_chk
-    check (platform in ('telegram','teams','gchat','email','clickup','jira')),
+    check (platform in ('telegram','teams','gchat','email','clickup','jira','confluence')),
   constraint channels_status_chk
     check (status in ('pending','active','disabled')),
   constraint channels_purpose_chk
