@@ -88,6 +88,8 @@ def deploy_workflow():
         return None
 
     payload = {k: wf[k] for k in ("name", "nodes", "connections", "settings") if k in wf}
+    # Inclure active:false d'abord pour forcer un changement d'etat au re-toggle
+    payload["active"] = False
 
     st, body = call("GET", "/workflows", params={"limit": 250})
     all_workflows = []
@@ -139,21 +141,30 @@ def deploy_workflow():
 # ---- 3. Toggle workflow (off/on) pour re-enregistrer les webhooks -----------
 def toggle_workflow(wf_id):
     print("\n=== Activation workflow (toggle off/on pour webhooks) ===")
-    # Essayer les deux methodes : POST (n8n >= 1.x) et PATCH (fallback).
-    # Sur n8n cloud, POST /activate retourne 200 mais n'enregistre pas
-    # toujours les webhooks. On tente PATCH en plus pour forcer.
-    st1, _ = call("POST", f"/workflows/{wf_id}/deactivate")
+    import time
+    # Le PUT a deja mis active:false. On s'assure que l'etat est bien inactif.
+    st1, r1 = call("POST", f"/workflows/{wf_id}/deactivate")
     if st1 not in (200, 201):
-        st1, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": False})
+        st1, r1 = call("PATCH", f"/workflows/{wf_id}", body={"active": False})
     print(f"  Desactive -> {st1}")
-    import time; time.sleep(2)
-    # Activer via PATCH (force la re-creation des webhooks sur n8n cloud)
-    st2, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
-    if st2 not in (200, 201):
-        st2, _ = call("POST", f"/workflows/{wf_id}/activate")
-    print(f"  Active    -> {st2}")
-    if st2 in (200, 201):
-        print("  OK : workflow actif, webhooks re-enregistres")
+    time.sleep(3)
+    # Activer via POST (methode principale sur n8n cloud)
+    st2, r2 = call("POST", f"/workflows/{wf_id}/activate")
+    print(f"  POST activate -> {st2}")
+    # Verifier le statut reel
+    st3, r3 = call("GET", f"/workflows/{wf_id}")
+    real_active = r3.get("active", "?") if isinstance(r3, dict) else "?"
+    print(f"  Statut reel apres toggle : active={real_active}")
+    if not real_active:
+        # Fallback: PATCH
+        st4, _ = call("PATCH", f"/workflows/{wf_id}", body={"active": True})
+        print(f"  Fallback PATCH active:true -> {st4}")
+        time.sleep(2)
+        st5, r5 = call("GET", f"/workflows/{wf_id}")
+        real2 = r5.get("active", "?") if isinstance(r5, dict) else "?"
+        print(f"  Statut reel apres fallback : active={real2}")
+    if real_active:
+        print("  OK : workflow actif")
     else:
         print("  ATTENTION : activer manuellement dans l'editeur n8n")
 
