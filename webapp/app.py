@@ -177,10 +177,12 @@ if prompt := st.chat_input(agent["placeholder"]):
                     headers={"Content-Type": "application/json"},
                 )
 
-                if resp.status_code == 200:
-                    data = resp.json() if resp.headers.get(
-                        "content-type", ""
-                    ).startswith("application/json") else {"reply": resp.text}
+                raw = resp.text or ""
+                if resp.status_code == 200 and raw.strip():
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        data = {"reply": raw[:2000]}
 
                     reply_text = (
                         data.get("reply_text")
@@ -195,11 +197,24 @@ if prompt := st.chat_input(agent["placeholder"]):
                                   "autonomy_level", "resolution_status")
                         if data.get(k)
                     }
+                elif resp.status_code == 404:
+                    reply_text = (
+                        "⚠️ Webhook introuvable (404).\n\n"
+                        "Le workflow n8n n'est probablement pas activé. "
+                        "Activez-le dans l'éditeur n8n."
+                    )
+                    metadata = {}
+                elif not raw.strip():
+                    reply_text = (
+                        "⚠️ Le serveur n8n a répondu sans contenu.\n\n"
+                        "Le pipeline n'a probablement pas atteint le nœud "
+                        "de réponse. Vérifiez les logs d'exécution n8n."
+                    )
+                    metadata = {}
                 else:
                     reply_text = (
                         f"⚠️ Erreur {resp.status_code} du serveur n8n.\n\n"
-                        "L'agent n'est peut-être pas encore actif. "
-                        "Vérifiez que le workflow est activé sur n8n."
+                        f"Réponse : {raw[:500]}"
                     )
                     metadata = {}
 
