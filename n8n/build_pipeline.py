@@ -1080,12 +1080,14 @@ PG_ADMIN_TICKETS_SQL = (
     " t.priority, t.status, t.autonomy_level,"
     " COALESCE(te.name, 'non attribue') as tenant_name,"
     " COALESCE(ch.platform, 'inconnu') as platform,"
+    " COALESCE(ch.display_name, 'inconnu') as channel_name,"
+    " t.requester_raw,"
     " to_char(t.created_at, 'DD/MM HH24:MI') as cree_le,"
     " t.created_at as cree_le_iso"
     " FROM tickets t"
     " LEFT JOIN tenants te ON te.id = t.tenant_id"
     " LEFT JOIN channels ch ON ch.id = t.channel_id"
-    " ORDER BY t.created_at DESC LIMIT 100;")
+    " ORDER BY t.created_at DESC LIMIT 5000;")
 
 # Enrichissement du contexte en une seule requete : historique, cas_similaires,
 # runbooks disponibles, et identite du demandeur.
