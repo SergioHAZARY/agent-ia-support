@@ -667,7 +667,7 @@ else if (/^\/help\b|^aide\b/.test(text)) cmd = 'help';
 else if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';
 else if (/\/stats\b|statistiq/i.test(text)) cmd = 'stats';
 else if (/\/recents?\b|derniers?\b|24h/i.test(text)) cmd = 'recents';
-else if (/\/export\b|exporter|csv|dump|excel|xls|fichier/i.test(text)) cmd = 'export';
+else if (/\/export\b|\bexport\b|exporter|csv|dump|excel|xls|fichier/i.test(text)) cmd = 'export';
 
 // 2. Groupement (detecte independamment de la commande)
 let groupBy = 'categorie';
@@ -1803,17 +1803,20 @@ nodes = [
         "headerParameters": {"parameters": [
             {"name": "Content-Type", "value": "application/json"}]}},
         on_error="continueRegularOutput"),
-    node("Preparer CSV", "n8n-nodes-base.code", 2, [1200, 940], {
+    node("Preparer CSV binaire", "n8n-nodes-base.code", 2, [1200, 940], {
         "jsCode": r"""
-// Encode le CSV en base64 pour l'envoyer via sendDocument
+// Cree un item avec les donnees CSV en binaire pour sendDocument Telegram
 const csvData = $json.csv_data || '';
-const csvB64 = Buffer.from(csvData, 'utf-8').toString('base64');
-return [{ json: {
-  chatId: $json.chatId,
-  reply: $json.reply,
-  csv_base64: csvB64,
-  csv_filename: $json.csv_filename || 'tickets_export.csv'
-}}];
+const buf = Buffer.from(csvData, 'utf-8');
+const binaryData = await this.helpers.prepareBinaryData(
+  buf,
+  $json.csv_filename || 'tickets_export.csv',
+  'text/csv; charset=utf-8'
+);
+return [{
+  json: { chatId: $json.chatId, reply: $json.reply },
+  binary: { data: binaryData }
+}];
 """.strip()}),
     node("HTTP: envoyer CSV", "n8n-nodes-base.httpRequest", 4.2, [1400, 940], {
         "method": "POST",
@@ -1831,24 +1834,6 @@ return [{ json: {
              "parameterType": "formBinaryData",
              "inputDataFieldName": "data"}]},
         "options": {"response": {"response": {"responseFormat": "json"}}}}),
-    node("Convertir binaire CSV", "n8n-nodes-base.code", 2, [1300, 880], {
-        "jsCode": r"""
-// Convertit le CSV base64 en binaire pour n8n sendDocument
-const items = $input.all();
-const result = [];
-for (const item of items) {
-  const csvB64 = item.json.csv_base64;
-  const buf = Buffer.from(csvB64, 'base64');
-  const bin = await this.helpers.prepareBinaryData(buf,
-    item.json.csv_filename || 'tickets_export.csv',
-    'text/csv');
-  result.push({
-    json: { chatId: item.json.chatId, reply: item.json.reply },
-    binary: { data: bin }
-  });
-}
-return result;
-""".strip()}),
 ]
 
 connections = merge_conn(
@@ -1963,10 +1948,9 @@ connections = merge_conn(
         ("Parser admin", "PG: admin tickets"),
         ("PG: admin tickets", "Formater admin"),
         ("Formater admin", "Admin: est-ce un export ?"),
-        ("Admin: est-ce un export ?", "Preparer CSV", 0),
+        ("Admin: est-ce un export ?", "Preparer CSV binaire", 0),
         ("Admin: est-ce un export ?", "HTTP: reponse admin", 1),
-        ("Preparer CSV", "Convertir binaire CSV"),
-        ("Convertir binaire CSV", "HTTP: envoyer CSV"),
+        ("Preparer CSV binaire", "HTTP: envoyer CSV"),
     ]),
     conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
 )

@@ -1457,7 +1457,7 @@
         1020
       ],
       "parameters": {
-        "jsCode": "// Parse la commande admin du bot @itmg_admin_bot.\n// Detection independante : cmd, groupBy et statusFilter sont analyses separement.\nconst j = $json;\nconst msg = j.message || j.channel_post || {};\nconst text = (msg.text || '').toLowerCase().trim();\nconst chatId = String((msg.chat || {}).id || '');\nconst chatType = (msg.chat || {}).type || 'private';\n\n// 1. Commande principale\nlet cmd = 'tickets';\nif (/^\\/(start)\\b/.test(text)) cmd = 'start';\nelse if (/^\\/help\\b|^aide\\b/.test(text)) cmd = 'help';\nelse if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';\nelse if (/\\/stats\\b|statistiq/i.test(text)) cmd = 'stats';\nelse if (/\\/recents?\\b|derniers?\\b|24h/i.test(text)) cmd = 'recents';\nelse if (/\\/export\\b|exporter|csv|dump|excel|xls|fichier/i.test(text)) cmd = 'export';\n\n// 2. Groupement (detecte independamment de la commande)\nlet groupBy = 'categorie';\nif (/\\b(par\\s+)?(canal|canaux|plateforme|channel)\\b/i.test(text)) groupBy = 'canal';\nelse if (/\\b(par\\s+)?(departement|societe|tenant|entite)\\b/i.test(text)) groupBy = 'tenant';\nelse if (/\\b(par\\s+)?(priorite|urgence)\\b/i.test(text)) groupBy = 'priorite';\nelse if (/\\b(par\\s+)?(statut|status|etat)\\b/i.test(text)) groupBy = 'statut';\n\n// 3. Filtre par statut (detecte independamment)\nlet statusFilter = '';\nif (/\\b(ouverts?|open|nouveau)\\b/i.test(text)) statusFilter = 'ouvert';\nelse if (/\\ben[\\s._-]?cours\\b|in[\\s._-]?progress|traitement/i.test(text)) statusFilter = 'en_cours';\nelse if (/\\b(fini|termin|clos|closed?|ferm|resolu|resolved|complet)\\b/i.test(text)) statusFilter = 'clos';\n\n// 4. Filtre par canal/plateforme (detecte independamment)\nlet channelFilter = '';\nif (/\\b(outlook|email|mail|courriel|boite)\\b/i.test(text)) channelFilter = 'email';\nelse if (/\\b(telegram)\\b/i.test(text)) channelFilter = 'telegram';\nelse if (/\\b(teams)\\b/i.test(text)) channelFilter = 'teams';\nelse if (/\\b(google\\s*chat|gchat|g-chat|hangouts?|chat\\s+google)\\b/i.test(text)) channelFilter = 'google_chat';\nelse if (/\\b(jira|jsm)\\b/i.test(text)) channelFilter = 'jira';\nelse if (/\\b(clickup|click[\\s-]?up)\\b/i.test(text)) channelFilter = 'clickup';\nelse if (/\\b(confluence|wiki)\\b/i.test(text)) channelFilter = 'confluence';\n\n// 5. Filtre par tenant/societe — matching generique, pas de liste hardcodee.\n// Extrait le dernier mot significatif apres un indicateur de societe.\nlet tenantFilter = '';\nconst tenantAliases = {\n  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],\n  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],\n  'bouchara': ['bouchara'],\n  'liban': ['liban','it support liban','itsupportliban'],\n  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],\n  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],\n  'devmg': ['dev mg','devmg','dev-mg']\n};\nfor (const [key, aliases] of Object.entries(tenantAliases)) {\n  if (aliases.some(a => text.toLowerCase().includes(a))) { tenantFilter = key; break; }\n}\n\nreturn [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter } }];"
+        "jsCode": "// Parse la commande admin du bot @itmg_admin_bot.\n// Detection independante : cmd, groupBy et statusFilter sont analyses separement.\nconst j = $json;\nconst msg = j.message || j.channel_post || {};\nconst text = (msg.text || '').toLowerCase().trim();\nconst chatId = String((msg.chat || {}).id || '');\nconst chatType = (msg.chat || {}).type || 'private';\n\n// 1. Commande principale\nlet cmd = 'tickets';\nif (/^\\/(start)\\b/.test(text)) cmd = 'start';\nelse if (/^\\/help\\b|^aide\\b/.test(text)) cmd = 'help';\nelse if (/rapport|report|bilan|synthes/i.test(text)) cmd = 'rapport';\nelse if (/\\/stats\\b|statistiq/i.test(text)) cmd = 'stats';\nelse if (/\\/recents?\\b|derniers?\\b|24h/i.test(text)) cmd = 'recents';\nelse if (/\\/export\\b|\\bexport\\b|exporter|csv|dump|excel|xls|fichier/i.test(text)) cmd = 'export';\n\n// 2. Groupement (detecte independamment de la commande)\nlet groupBy = 'categorie';\nif (/\\b(par\\s+)?(canal|canaux|plateforme|channel)\\b/i.test(text)) groupBy = 'canal';\nelse if (/\\b(par\\s+)?(departement|societe|tenant|entite)\\b/i.test(text)) groupBy = 'tenant';\nelse if (/\\b(par\\s+)?(priorite|urgence)\\b/i.test(text)) groupBy = 'priorite';\nelse if (/\\b(par\\s+)?(statut|status|etat)\\b/i.test(text)) groupBy = 'statut';\n\n// 3. Filtre par statut (detecte independamment)\nlet statusFilter = '';\nif (/\\b(ouverts?|open|nouveau)\\b/i.test(text)) statusFilter = 'ouvert';\nelse if (/\\ben[\\s._-]?cours\\b|in[\\s._-]?progress|traitement/i.test(text)) statusFilter = 'en_cours';\nelse if (/\\b(fini|termin|clos|closed?|ferm|resolu|resolved|complet)\\b/i.test(text)) statusFilter = 'clos';\n\n// 4. Filtre par canal/plateforme (detecte independamment)\nlet channelFilter = '';\nif (/\\b(outlook|email|mail|courriel|boite)\\b/i.test(text)) channelFilter = 'email';\nelse if (/\\b(telegram)\\b/i.test(text)) channelFilter = 'telegram';\nelse if (/\\b(teams)\\b/i.test(text)) channelFilter = 'teams';\nelse if (/\\b(google\\s*chat|gchat|g-chat|hangouts?|chat\\s+google)\\b/i.test(text)) channelFilter = 'google_chat';\nelse if (/\\b(jira|jsm)\\b/i.test(text)) channelFilter = 'jira';\nelse if (/\\b(clickup|click[\\s-]?up)\\b/i.test(text)) channelFilter = 'clickup';\nelse if (/\\b(confluence|wiki)\\b/i.test(text)) channelFilter = 'confluence';\n\n// 5. Filtre par tenant/societe — matching generique, pas de liste hardcodee.\n// Extrait le dernier mot significatif apres un indicateur de societe.\nlet tenantFilter = '';\nconst tenantAliases = {\n  'beautybay': ['beautybay','beauty bay','beauty-bay','regard beauty','regardbeauty'],\n  'bazarchic': ['bazarchic','bazar chic','bazar-chic','odoo'],\n  'bouchara': ['bouchara'],\n  'liban': ['liban','it support liban','itsupportliban'],\n  'atlasformen': ['atlas for men','atlasformen','atlas-for-men','atlas'],\n  'fsaget': ['francois saget','françois saget','francoissaget','fsaget','saget'],\n  'devmg': ['dev mg','devmg','dev-mg']\n};\nfor (const [key, aliases] of Object.entries(tenantAliases)) {\n  if (aliases.some(a => text.toLowerCase().includes(a))) { tenantFilter = key; break; }\n}\n\nreturn [{ json: { cmd, groupBy, chatId, chatType, text, statusFilter, channelFilter, tenantFilter } }];"
       }
     },
     {
@@ -1558,7 +1558,7 @@
       "onError": "continueRegularOutput"
     },
     {
-      "name": "Preparer CSV",
+      "name": "Preparer CSV binaire",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -1566,7 +1566,7 @@
         940
       ],
       "parameters": {
-        "jsCode": "// Encode le CSV en base64 pour l'envoyer via sendDocument\nconst csvData = $json.csv_data || '';\nconst csvB64 = Buffer.from(csvData, 'utf-8').toString('base64');\nreturn [{ json: {\n  chatId: $json.chatId,\n  reply: $json.reply,\n  csv_base64: csvB64,\n  csv_filename: $json.csv_filename || 'tickets_export.csv'\n}}];"
+        "jsCode": "// Cree un item avec les donnees CSV en binaire pour sendDocument Telegram\nconst csvData = $json.csv_data || '';\nconst buf = Buffer.from(csvData, 'utf-8');\nconst binaryData = await this.helpers.prepareBinaryData(\n  buf,\n  $json.csv_filename || 'tickets_export.csv',\n  'text/csv; charset=utf-8'\n);\nreturn [{\n  json: { chatId: $json.chatId, reply: $json.reply },\n  binary: { data: binaryData }\n}];"
       }
     },
     {
@@ -1613,18 +1613,6 @@
             }
           }
         }
-      }
-    },
-    {
-      "name": "Convertir binaire CSV",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1300,
-        880
-      ],
-      "parameters": {
-        "jsCode": "// Convertit le CSV base64 en binaire pour n8n sendDocument\nconst items = $input.all();\nconst result = [];\nfor (const item of items) {\n  const csvB64 = item.json.csv_base64;\n  const buf = Buffer.from(csvB64, 'base64');\n  const bin = await this.helpers.prepareBinaryData(buf,\n    item.json.csv_filename || 'tickets_export.csv',\n    'text/csv');\n  result.push({\n    json: { chatId: item.json.chatId, reply: item.json.reply },\n    binary: { data: bin }\n  });\n}\nreturn result;"
       }
     }
   ],
@@ -2397,7 +2385,7 @@
       "main": [
         [
           {
-            "node": "Preparer CSV",
+            "node": "Preparer CSV binaire",
             "type": "main",
             "index": 0
           }
@@ -2411,18 +2399,7 @@
         ]
       ]
     },
-    "Preparer CSV": {
-      "main": [
-        [
-          {
-            "node": "Convertir binaire CSV",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Convertir binaire CSV": {
+    "Preparer CSV binaire": {
       "main": [
         [
           {
