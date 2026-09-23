@@ -4,6 +4,7 @@ Chat avec les deux agents (Support IT et Admin) via n8n.
 """
 
 import os
+import re
 import time
 import requests
 import streamlit as st
@@ -41,6 +42,22 @@ AGENTS = {
     },
 }
 
+
+# ---------------------------------------------------------------------------
+# HTML → Markdown conversion (admin responses use Telegram-style HTML)
+# ---------------------------------------------------------------------------
+def html_to_markdown(text: str) -> str:
+    """Convert Telegram-style HTML to Streamlit Markdown."""
+    if not text:
+        return ""
+    s = text
+    s = re.sub(r"<b>(.*?)</b>", r"**\1**", s, flags=re.DOTALL)
+    s = re.sub(r"<i>(.*?)</i>", r"*\1*", s, flags=re.DOTALL)
+    s = re.sub(r"<code>(.*?)</code>", r"`\1`", s, flags=re.DOTALL)
+    s = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -74,7 +91,6 @@ st.markdown("""
         font-weight: 600;
     }
     .status-online { background: #00D4AA; color: #0E1117; }
-    .status-offline { background: #FF4B4B; color: white; }
     div[data-testid="stChatMessage"] {
         border-radius: 12px;
         margin-bottom: 0.5rem;
@@ -99,9 +115,9 @@ with st.sidebar:
     st.markdown("## 🤖 Agents disponibles")
     st.markdown("---")
 
-    for key, agent in AGENTS.items():
+    for key, ag in AGENTS.items():
         is_active = st.session_state.agent == key
-        label = f"{agent['icon']} {agent['name']}"
+        label = f"{ag['icon']} {ag['name']}"
         if is_active:
             label += " ✓"
         if st.button(label, key=f"btn_{key}", use_container_width=True,
@@ -137,10 +153,21 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------
 # Display chat history
+# ---------------------------------------------------------------------------
 for msg in messages:
-    with st.chat_message(msg["role"], avatar=agent["icon"] if msg["role"] == "assistant" else "👤"):
+    with st.chat_message(msg["role"],
+                         avatar=agent["icon"] if msg["role"] == "assistant" else "👤"):
         st.markdown(msg["content"])
+        if msg.get("csv_data"):
+            st.download_button(
+                "📥 Télécharger le CSV",
+                data=msg["csv_data"],
+                file_name=msg.get("csv_filename", "export.csv"),
+                mime="text/csv",
+                key=f"dl_{msg.get('ts', 0)}",
+            )
         if msg.get("metadata"):
             meta = msg["metadata"]
             cols = st.columns(4)
@@ -153,14 +180,22 @@ for msg in messages:
             if meta.get("autonomy_level"):
                 cols[3].caption(f"🤖 {meta['autonomy_level']}")
 
+# ---------------------------------------------------------------------------
 # Chat input
+# ---------------------------------------------------------------------------
 if prompt := st.chat_input(agent["placeholder"]):
-    messages.append({"role": "user", "content": prompt})
+    ts = int(time.time() * 1000)
+    messages.append({"role": "user", "content": prompt, "ts": ts})
     with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
 
     with st.chat_message("assistant", avatar=agent["icon"]):
         with st.spinner("L'agent analyse votre demande..."):
+            reply_text = ""
+            metadata = {}
+            csv_data = None
+            csv_filename = None
+
             try:
                 payload = {
                     "platform": "web",
@@ -168,7 +203,7 @@ if prompt := st.chat_input(agent["placeholder"]):
                     "channel_id": f"web-{agent_key}",
                     "user_name": st.session_state.session_id,
                     "user_id": st.session_state.session_id,
-                    "message_id": f"web-{int(time.time() * 1000)}",
+                    "message_id": f"web-{ts}",
                 }
                 resp = requests.post(
                     agent["webhook"],
@@ -182,15 +217,20 @@ if prompt := st.chat_input(agent["placeholder"]):
                     try:
                         data = resp.json()
                     except ValueError:
-                        data = {"reply": raw[:2000]}
+                        data = {"reply_text": raw[:2000]}
 
-                    reply_text = (
+                    raw_reply = (
                         data.get("reply_text")
                         or data.get("reply")
                         or data.get("text")
                         or data.get("message")
                         or str(data)
                     )
+                    reply_text = html_to_markdown(raw_reply)
+
+                    csv_data = data.get("csv_data")
+                    csv_filename = data.get("csv_filename", "export.csv")
+
                     metadata = {
                         k: data.get(k)
                         for k in ("ticket_ref", "category", "priority",
@@ -203,39 +243,42 @@ if prompt := st.chat_input(agent["placeholder"]):
                         "Le workflow n8n n'est probablement pas activé. "
                         "Activez-le dans l'éditeur n8n."
                     )
-                    metadata = {}
                 elif not raw.strip():
                     reply_text = (
                         "⚠️ Le serveur n8n a répondu sans contenu.\n\n"
                         "Le pipeline n'a probablement pas atteint le nœud "
                         "de réponse. Vérifiez les logs d'exécution n8n."
                     )
-                    metadata = {}
                 else:
                     reply_text = (
                         f"⚠️ Erreur {resp.status_code} du serveur n8n.\n\n"
                         f"Réponse : {raw[:500]}"
                     )
-                    metadata = {}
 
             except requests.exceptions.Timeout:
                 reply_text = (
                     "⏱️ Le traitement prend plus de temps que prévu. "
                     "Votre demande a été enregistrée, un technicien la traitera."
                 )
-                metadata = {}
             except requests.exceptions.ConnectionError:
                 reply_text = (
                     "🔌 Impossible de joindre le serveur n8n.\n\n"
-                    "Vérifiez la variable `N8N_WEBHOOK_BASE` ou que "
-                    "l'instance n8n est démarrée."
+                    "Vérifiez que l'instance n8n est démarrée."
                 )
-                metadata = {}
             except Exception as exc:
                 reply_text = f"❌ Erreur inattendue : {exc}"
-                metadata = {}
 
         st.markdown(reply_text)
+
+        if csv_data:
+            st.download_button(
+                "📥 Télécharger le CSV",
+                data=csv_data,
+                file_name=csv_filename or "export.csv",
+                mime="text/csv",
+                key=f"dl_{ts}",
+            )
+
         if metadata:
             cols = st.columns(4)
             if metadata.get("ticket_ref"):
@@ -251,4 +294,7 @@ if prompt := st.chat_input(agent["placeholder"]):
         "role": "assistant",
         "content": reply_text,
         "metadata": metadata,
+        "csv_data": csv_data,
+        "csv_filename": csv_filename,
+        "ts": ts,
     })
