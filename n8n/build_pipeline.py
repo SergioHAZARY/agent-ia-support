@@ -1021,6 +1021,105 @@ for (const [group, items] of sortedGroups) {
 return [{ json: { reply, chatId, isWeb } }];
 """.strip()
 
+ADMIN_CONTEXT_JS = r"""
+// Prepare le contexte admin pour Claude : agregation des tickets + prompt.
+const cmdData = $('Parser admin').first().json;
+const allTickets = $input.all().map(i => i.json).filter(t => t.id);
+const chatId = cmdData.chatId;
+const isWeb = !!cmdData.isWeb;
+const userText = cmdData.text || '';
+const cmd = cmdData.cmd || 'tickets';
+const statusFilter = cmdData.statusFilter || '';
+const channelFilter = cmdData.channelFilter || '';
+const tenantFilter = cmdData.tenantFilter || '';
+
+// Agregation
+const byCat = {}, byPrio = {}, byPlat = {}, byStat = {}, byTenant = {};
+for (const t of allTickets) {
+  byCat[t.category||'autre'] = (byCat[t.category||'autre']||0) + 1;
+  byPrio[t.priority||'p4'] = (byPrio[t.priority||'p4']||0) + 1;
+  byPlat[t.platform||'inconnu'] = (byPlat[t.platform||'inconnu']||0) + 1;
+  byStat[t.status||'inconnu'] = (byStat[t.status||'inconnu']||0) + 1;
+  byTenant[t.tenant_name||'non attribue'] = (byTenant[t.tenant_name||'non attribue']||0) + 1;
+}
+
+// Echantillon des 20 tickets les plus recents
+const sample = allTickets.slice(0, 20).map(t => (
+  (t.ref||(t.id||'').slice(0,8)) + ' | ' +
+  (t.status||'?') + ' | ' + (t.priority||'?') + ' | ' +
+  (t.category||'?') + ' | ' + (t.platform||'?') + ' | ' +
+  (t.tenant_name||'?') + ' | ' +
+  (t.title||'').slice(0,60) + ' | ' + (t.cree_le||'')
+)).join('\n');
+
+// CSV pour export
+let csv_data = null, csv_filename = null;
+if (cmd === 'export') {
+  const sep = ';';
+  const headers = ['REF','STATUT','PRIORITE','CANAL','SOCIETE','CATEGORIE','DEMANDEUR','TITRE','DATE'];
+  csv_data = '﻿' + headers.join(sep) + '\n';
+  for (const t of allTickets) {
+    csv_data += [
+      t.ref||(t.id||'').slice(0,8), t.status||'', t.priority||'',
+      t.platform||'', t.tenant_name||'', t.category||'',
+      (t.requester_raw||'').replace(/[;"]/g,' '),
+      '"'+(t.title||'').replace(/"/g,"'").slice(0,120)+'"',
+      t.cree_le||''
+    ].join(sep) + '\n';
+  }
+  csv_filename = 'tickets_export.csv';
+}
+
+const format = isWeb
+  ? 'Markdown (gras avec **, italique avec *, code avec `backticks`)'
+  : 'HTML Telegram (balises <b>, <i>, <code>)';
+
+const stats = 'Total: ' + allTickets.length +
+  '\nPar categorie: ' + JSON.stringify(byCat) +
+  '\nPar priorite: ' + JSON.stringify(byPrio) +
+  '\nPar canal: ' + JSON.stringify(byPlat) +
+  '\nPar statut: ' + JSON.stringify(byStat) +
+  '\nPar societe: ' + JSON.stringify(byTenant) +
+  '\nFiltres appliques: statut=' + (statusFilter||'aucun') + ', canal=' + (channelFilter||'aucun') + ', societe=' + (tenantFilter||'aucun');
+
+const prompt = 'Tu es l\'agent admin du systeme IT Support multicanal. Tu analyses la base de tickets pour repondre aux administrateurs IT.\n\n'
+  + 'DONNEES ACTUELLES (' + allTickets.length + ' tickets apres filtrage) :\n'
+  + stats + '\n\n'
+  + 'ECHANTILLON DES TICKETS RECENTS (ref | statut | priorite | categorie | canal | societe | titre | date) :\n'
+  + (sample || '(aucun ticket)') + '\n\n'
+  + 'COMMANDE DETECTEE : ' + cmd + '\n'
+  + 'QUESTION DE L\'ADMINISTRATEUR : ' + userText + '\n\n'
+  + 'INSTRUCTIONS :\n'
+  + '- Reponds en francais, de facon claire et structuree\n'
+  + '- Utilise le format ' + format + '\n'
+  + '- Donne des chiffres precis (totaux, pourcentages, repartition)\n'
+  + '- Mets en avant les points importants (tickets urgents P1/P2, volumes anormaux)\n'
+  + '- Si c\'est un listing, montre les tickets les plus recents/importants (max 10-15 lignes)\n'
+  + '- Si c\'est une demande de stats, analyse les donnees et donne des insights\n'
+  + '- Si c\'est un export, confirme le nombre de tickets exportes\n'
+  + '- Si c\'est /start ou /help, donne un guide des commandes disponibles\n'
+  + '- Utilise des emojis pour rendre la lecture agreable (📋 📊 🔴 🟡 🟢 📁 📡 🏢)\n'
+  + '- Sois concis mais complet, jamais plus de 30 lignes\n'
+  + '- Ne dis JAMAIS "je n\'ai pas acces" — tu AS les donnees ci-dessus\n'
+  + '- Ne mets jamais de bloc ```json ou de structure technique, reponds naturellement\n\n'
+  + 'Reponds UNIQUEMENT avec le texte de la reponse.';
+
+return [{ json: { llm_prompt: prompt, chatId, isWeb, csv_data, csv_filename } }];
+""".strip()
+
+ADMIN_STRUCT_JS = r"""
+// Structure la reponse de Claude (admin) : ajoute chatId, isWeb, csv.
+const ctx = $('Preparer contexte admin').first().json;
+const raw = ($json.text || $json.output || $json.response || '').trim();
+return [{ json: {
+  reply: raw,
+  chatId: ctx.chatId,
+  isWeb: ctx.isWeb,
+  csv_data: ctx.csv_data || null,
+  csv_filename: ctx.csv_filename || null
+}}];
+""".strip()
+
 JIRA_DEDUP_JS = r"""
 // Reformate chaque issue Jira en format normalise (comme si c'etait un webhook).
 // Le deduplication se fait dans PG: enregistrer evenement (ON CONFLICT).
@@ -1797,8 +1896,7 @@ nodes = [
     sticky("noteAdmin",
            "## Bot Admin (@itmg_admin_bot)\n"
            "TelegramTrigger dedie au bot admin.\n"
-           "Commandes : /tickets, /stats, /recents, /rapport, tickets par canal/priorite/departement.\n"
-           "Reponses groupees par categorie, canal, priorite ou societe.\n"
+           "Requetes admin routees via Claude pour reponses IA intelligentes.\n"
            "Credential : Telegram Admin Bot (telegramAdminApi).",
            [-60, 940], w=520, h=140),
     node("AdminTrigger", "n8n-nodes-base.telegramTrigger", 1.2, [220, 1020], {
@@ -1808,9 +1906,17 @@ nodes = [
     node("Parser admin", "n8n-nodes-base.code", 2, [400, 1020],
          {"jsCode": ADMIN_PARSE_JS}),
     pg_node("PG: admin tickets", [600, 1020], PG_ADMIN_TICKETS_SQL, ""),
-    node("Formater admin", "n8n-nodes-base.code", 2, [800, 1020],
-         {"jsCode": ADMIN_FORMAT_JS}),
-    node("Admin: est-ce un export ?", "n8n-nodes-base.if", 2.3, [1000, 1020], {
+    node("Preparer contexte admin", "n8n-nodes-base.code", 2, [800, 1020],
+         {"jsCode": ADMIN_CONTEXT_JS}),
+    node("Agent Claude (admin)", "@n8n/n8n-nodes-langchain.chainLlm", 1.5, [1000, 1020],
+         {"promptType": "define", "text": "={{ $json.llm_prompt }}"}),
+    node("Modele Admin", "@n8n/n8n-nodes-langchain.lmChatOpenRouter", 1, [1000, 1240], {
+        "model": "anthropic/claude-3-haiku",
+        "options": {"maxTokensToSample": 2000, "temperature": 0.1}},
+        creds=({"openRouterApi": CREDS["openRouterApi"]} if "openRouterApi" in CREDS else None)),
+    node("Structurer reponse admin", "n8n-nodes-base.code", 2, [1200, 1020],
+         {"jsCode": ADMIN_STRUCT_JS}),
+    node("Admin: est-ce un export ?", "n8n-nodes-base.if", 2.3, [1400, 1020], {
         "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
                        "combinator": "and",
                        "conditions": [{"id": "exp1",
@@ -1818,7 +1924,7 @@ nodes = [
                                        "rightValue": "",
                                        "operator": {"type": "string", "operation": "isNotEmpty"}}]},
         "options": {}}),
-    node("HTTP: reponse admin", "n8n-nodes-base.httpRequest", 4.2, [1200, 1100], {
+    node("HTTP: reponse admin", "n8n-nodes-base.httpRequest", 4.2, [1600, 1100], {
         "method": "POST",
         "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_ADMIN_BOT_TOKEN }}/sendMessage",
         "sendBody": True,
@@ -1831,7 +1937,7 @@ nodes = [
             {"name": "Content-Type", "value": "application/json"}]}},
         on_error="continueRegularOutput"),
     # Routeur web/Telegram pour l'admin
-    node("Admin: web ou Telegram ?", "n8n-nodes-base.if", 2.3, [1000, 1120], {
+    node("Admin: web ou Telegram ?", "n8n-nodes-base.if", 2.3, [1400, 1120], {
         "conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
                        "combinator": "and",
                        "conditions": [{"id": "isWeb",
@@ -1840,7 +1946,7 @@ nodes = [
                                        "operator": {"type": "boolean", "operation": "true"}}]},
         "options": {}}),
     # Reponse JSON pour le client web admin
-    node("Admin: repondre JSON", "n8n-nodes-base.respondToWebhook", 1.1, [1200, 1180], {
+    node("Admin: repondre JSON", "n8n-nodes-base.respondToWebhook", 1.1, [1600, 1180], {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ reply_text: $json.reply,"
                         " csv_data: $json.csv_data || null,"
@@ -1848,7 +1954,7 @@ nodes = [
         "options": {"responseHeaders": {"entries": [
             {"name": "Content-Type", "value": "application/json"}]}}}),
 
-    node("Envoyer CSV Telegram", "n8n-nodes-base.code", 2, [1200, 940], {
+    node("Envoyer CSV Telegram", "n8n-nodes-base.code", 2, [1600, 940], {
         "jsCode": r"""
 const chatId = String($json.chatId);
 const caption = ($json.reply || '').slice(0, 1024);
@@ -2026,14 +2132,17 @@ connections = merge_conn(
         ("AdminTrigger", "Parser admin"),
         ("Webhook Web Admin", "Parser admin"),
         ("Parser admin", "PG: admin tickets"),
-        ("PG: admin tickets", "Formater admin"),
-        ("Formater admin", "Admin: web ou Telegram ?"),
+        ("PG: admin tickets", "Preparer contexte admin"),
+        ("Preparer contexte admin", "Agent Claude (admin)"),
+        ("Agent Claude (admin)", "Structurer reponse admin"),
+        ("Structurer reponse admin", "Admin: web ou Telegram ?"),
         ("Admin: web ou Telegram ?", "Admin: repondre JSON", 0),
         ("Admin: web ou Telegram ?", "Admin: est-ce un export ?", 1),
         ("Admin: est-ce un export ?", "Envoyer CSV Telegram", 0),
         ("Admin: est-ce un export ?", "HTTP: reponse admin", 1),
     ]),
     conn([("Modele OpenRouter", "Agent Claude (triage)", 0, "ai_languageModel")]),
+    conn([("Modele Admin", "Agent Claude (admin)", 0, "ai_languageModel")]),
 )
 
 workflow = {
